@@ -551,7 +551,11 @@ impl GameState {
                 if visited[nuy as usize][nux as usize] {
                     continue;
                 }
-                if self.is_blocked_for_npc(nx, ny, npc_idx) {
+                // BFS plans through *static* obstacles only — other NPCs and the
+                // player are handled by the actual move attempt in step_npc_toward.
+                // This prevents deadlocks where crowded NPCs all see each other
+                // as permanent walls.
+                if self.is_static_blocked(nx, ny) {
                     continue;
                 }
                 visited[nuy as usize][nux as usize] = true;
@@ -682,6 +686,28 @@ impl GameState {
             return true;
         }
         if self.npc_at(x as u16, y as u16).is_some() {
+            return true;
+        }
+        false
+    }
+
+    /// Static obstacles only: edges, non-wasteland terrain, walls, capital footprints.
+    /// Does NOT consider other NPCs or the player. Used by BFS pathfinding so NPCs
+    /// can plan routes through space temporarily occupied by moving peers.
+    fn is_static_blocked(&self, x: i16, y: i16) -> bool {
+        let w = self.map[0].len() as i16;
+        let h = self.map.len() as i16;
+        if x < 0 || x >= w || y < 0 || y >= h {
+            return true;
+        }
+        let tile = &self.map[y as usize][x as usize];
+        if tile.terrain != Terrain::Wasteland {
+            return true;
+        }
+        if tile.wall.is_some() {
+            return true;
+        }
+        if self.is_capital_area(x as u16, y as u16) {
             return true;
         }
         false
