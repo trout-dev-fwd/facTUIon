@@ -12,7 +12,8 @@ Defines `CapitalKind` (City vs Camp), the `Capital` struct, and the helper metho
 - `center_glyph()` — the letter shown at the center tile (always `faction.glyph()`). Cities show W/G/S, camps show C (Cult's glyph).
 - `is_inside(x, y)` — footprint test. City: `dx.abs() <= 1 && dy.abs() <= 1`. Camp: center or one cardinal step.
 - `fuel_tiers()` — how many `FUEL_THRESHOLDS` this capital has passed.
-- `npc_move_cooldown()` — `NPC_BASE_MOVE_MS` minus `FUEL_SPEED_BONUS_PCT` per tier.
+- `apply_fuel_bonus(base_ms)` — apply this capital's fuel-tier percentage reduction to a base cooldown. Shared between NPC movement and the player's `move_player` so both benefit from their home capital's fuel.
+- `npc_move_cooldown(weight)` — per-weight lookup in `NPC_MOVE_COOLDOWN` followed by `apply_fuel_bonus`.
 
 ## Notes
 - Both kinds use the same `Capital` struct, so trade, decay, population, HUD, and all query logic in `state.rs` work on both. The only kind-dependent behavior is the footprint (`is_inside`, `capital_border_at`, etc.) and the rendered glyphs.

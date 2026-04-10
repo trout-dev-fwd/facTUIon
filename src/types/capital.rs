@@ -50,15 +50,20 @@ impl Capital {
             .count() as u32
     }
 
+    /// Apply this capital's fuel-tier percentage reduction to a base cooldown.
+    /// Shared between NPC movement and the player's movement so both benefit
+    /// from their home capital's fuel stockpile in the same way.
+    pub fn apply_fuel_bonus(&self, base_ms: u64) -> u64 {
+        let bonus_pct = self.fuel_tiers() * crate::config::FUEL_SPEED_BONUS_PCT;
+        let reduction = (base_ms * bonus_pct as u64) / 100;
+        base_ms.saturating_sub(reduction)
+    }
+
     /// NPC move cooldown in ms for a given carry weight, reduced by fuel bonuses.
-    /// Uses the per-weight `NPC_MOVE_COOLDOWN` table (heavier NPCs are slower)
-    /// and then applies a percentage reduction for each fuel threshold the
-    /// capital has hit.
+    /// Looks up the per-weight base from `NPC_MOVE_COOLDOWN` and then applies
+    /// `apply_fuel_bonus`.
     pub fn npc_move_cooldown(&self, weight: u32) -> u64 {
         let weight_idx = (weight as usize).min(crate::config::NPC_MOVE_COOLDOWN.len() - 1);
-        let base = crate::config::NPC_MOVE_COOLDOWN[weight_idx];
-        let bonus_pct = self.fuel_tiers() * crate::config::FUEL_SPEED_BONUS_PCT;
-        let reduction = (base * bonus_pct as u64) / 100;
-        base.saturating_sub(reduction)
+        self.apply_fuel_bonus(crate::config::NPC_MOVE_COOLDOWN[weight_idx])
     }
 }

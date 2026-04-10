@@ -1004,7 +1004,15 @@ impl GameState {
     pub fn move_player(&mut self, dx: i16, dy: i16) {
         let now = std::time::Instant::now();
         let weight = self.player.carrying() as usize;
-        let cooldown = crate::config::MOVE_COOLDOWN[weight.min(crate::config::MOVE_COOLDOWN.len() - 1)];
+        let base = crate::config::MOVE_COOLDOWN[weight.min(crate::config::MOVE_COOLDOWN.len() - 1)];
+        // Player also benefits from their home capital's fuel-tier speed bonus,
+        // same mechanism as NPCs.
+        let home_idx = self.player.home_capital_idx;
+        let cooldown = if home_idx < self.capitals.len() {
+            self.capitals[home_idx].apply_fuel_bonus(base)
+        } else {
+            base
+        };
         if now.duration_since(self.last_move).as_millis() < cooldown as u128 {
             return;
         }

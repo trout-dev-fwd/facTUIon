@@ -28,7 +28,7 @@ pub const DEHYDRATION_INTERVAL_MS: u64 = 30_000; // lose NPC every 30s when wate
 // Fuel speed bonuses: NPC cooldown reduced by this % at each fuel threshold
 // [fuel >= 5, >= 10, >= 15, >= 20] — each tier stacks
 pub const FUEL_THRESHOLDS: [u32; 4] = [5, 10, 15, 20];
-pub const FUEL_SPEED_BONUS_PCT: u32 = 10; // % faster per threshold reached
+pub const FUEL_SPEED_BONUS_PCT: u32 = 20; // % faster per threshold reached
 // NPC movement cooldown by carry weight (items carried). Indexed like the
 // player's MOVE_COOLDOWN — heavier NPCs move slower. Fuel bonuses reduce
 // whichever entry applies by a percentage.
