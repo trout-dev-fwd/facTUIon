@@ -36,6 +36,17 @@ pub enum NpcTask {
         ty: u16,
         started: std::time::Instant,
     },
+    /// Walking toward a tile on the home capital's precomputed fortress
+    /// wall path. The tile is already owned by this faction (walls are
+    /// built only on claimed territory to avoid the contested multiplier).
+    TargetingWall { tx: u16, ty: u16 },
+    /// Stationary on a wall target, running the wall build timer. Scrap
+    /// has already been deducted from the home capital at transition time.
+    BuildingWall {
+        tx: u16,
+        ty: u16,
+        started: std::time::Instant,
+    },
 }
 
 pub struct Npc {

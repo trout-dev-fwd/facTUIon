@@ -20,6 +20,14 @@ pub struct Capital {
     /// population, and the upgrade cost for the next step. Camps stay at tier 1
     /// and currently don't upgrade.
     pub tier: u32,
+    /// Pre-computed fortress wall tiles. Each entry is a tile that should be
+    /// turned into a wall once the faction owns it. The list is produced at
+    /// map generation time by `compute_fortress_walls` (in state.rs) based on
+    /// a bounding box around the capital and its primary resource cluster,
+    /// with a 2-tile buffer. Gate tiles (the gap in the wall) are already
+    /// excluded from this list. Only starting cities get a populated list;
+    /// founded cities and camps currently leave this empty.
+    pub fortress_walls: Vec<(u16, u16)>,
 }
 
 impl Capital {

@@ -380,6 +380,7 @@ impl GameState {
                     scrap_invested: crate::config::FOUNDATION_SCRAP_COST,
                     kind: CapitalKind::City,
                     tier: 1,
+                    fortress_walls: Vec::new(),
                 });
 
                 let cx = px as i16;
@@ -497,6 +498,7 @@ impl GameState {
                     crowns: 0,
                     scrap_invested: 0,
                     tier: 1,
+                    fortress_walls: Vec::new(),
                 });
 
                 let cx = px as i16;

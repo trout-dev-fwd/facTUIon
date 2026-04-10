@@ -101,17 +101,28 @@ impl GameState {
         let capitals: Vec<Capital> = capital_positions
             .iter()
             .enumerate()
-            .map(|(i, &(x, y))| Capital {
-                x: x as u16,
-                y: y as u16,
-                faction: factions[i],
-                water: crate::config::STARTING_STOCKPILE,
-                fuel: crate::config::STARTING_STOCKPILE,
-                scrap: crate::config::STARTING_STOCKPILE,
-                crowns: crate::config::STARTING_CROWNS,
-                scrap_invested: crate::config::CITY_TOTAL_SCRAP,
-                kind: CapitalKind::City,
-                tier: 1,
+            .map(|(i, &(x, y))| {
+                let faction = factions[i];
+                let primary = match faction {
+                    FactionId::Water => Terrain::Water,
+                    FactionId::Gas => Terrain::Rocky,
+                    FactionId::Scrap => Terrain::Ruins,
+                    FactionId::Cult => Terrain::Wasteland,
+                };
+                let fortress_walls = compute_fortress_walls(&map, x as u16, y as u16, primary);
+                Capital {
+                    x: x as u16,
+                    y: y as u16,
+                    faction,
+                    water: crate::config::STARTING_STOCKPILE,
+                    fuel: crate::config::STARTING_STOCKPILE,
+                    scrap: crate::config::STARTING_STOCKPILE,
+                    crowns: crate::config::STARTING_CROWNS,
+                    scrap_invested: crate::config::CITY_TOTAL_SCRAP,
+                    kind: CapitalKind::City,
+                    tier: 1,
+                    fortress_walls,
+                }
             })
             .collect();
 
@@ -526,6 +537,23 @@ impl GameState {
                 continue;
             }
 
+            // BuildingWall is also time-based. Scrap was deducted at the
+            // transition into BuildingWall, so completion just writes the
+            // wall to the tile and drops back to Wandering.
+            if let NpcTask::BuildingWall { tx, ty, started } = task {
+                if now.duration_since(started).as_millis()
+                    >= crate::config::BUILD_WALL_TIME_MS as u128
+                {
+                    let faction = self.npcs[i].faction;
+                    if (ty as usize) < self.map.len() && (tx as usize) < self.map[0].len() {
+                        self.map[ty as usize][tx as usize].wall = Some(faction);
+                    }
+                    self.npcs[i].task = NpcTask::Wandering;
+                    self.npcs[i].last_failed_target = None;
+                }
+                continue;
+            }
+
             // All movement/decision tasks are gated by the per-NPC cooldown,
             // which scales with carry weight and home capital's fuel tier.
             let weight = self.npcs[i].carrying_total();
@@ -545,13 +573,18 @@ impl GameState {
 
             match task {
                 NpcTask::Wandering => {
-                    // Pressure-based task selection for Phase 1:
-                    // harvest has highest priority; if nothing needs harvesting
-                    // the NPC tries to expand territory; otherwise it wanders.
+                    // Task priority: harvest → claim → wall → random wander.
+                    // Harvest keeps stockpiles filled. Claim expands territory
+                    // around the primary resource cluster. Wall hardens the
+                    // precomputed fortress boundary on tiles already claimed
+                    // (so walling itself doesn't take the slow unclaimed
+                    // multiplier).
                     if let Some((tx, ty, terrain)) = self.pick_harvest_target(i) {
                         self.npcs[i].task = NpcTask::TargetingResource { tx, ty, terrain };
                     } else if let Some((tx, ty)) = self.pick_claim_target(i) {
                         self.npcs[i].task = NpcTask::TargetingClaim { tx, ty };
+                    } else if let Some((tx, ty)) = self.pick_wall_target(i) {
+                        self.npcs[i].task = NpcTask::TargetingWall { tx, ty };
                     } else {
                         // Nothing to do — take a random step
                         let d = dirs[self.sim_rng.gen_range(0..4)];
@@ -646,8 +679,49 @@ impl GameState {
                     }
                     self.npcs[i].last_move = now;
                 }
+                NpcTask::TargetingWall { tx, ty } => {
+                    // Walk onto the target tile, then deduct scrap and start building.
+                    if self.npcs[i].x == tx && self.npcs[i].y == ty {
+                        let home_idx = self.npcs[i].home_capital_idx;
+                        // Re-validate: tile must still be wasteland, still
+                        // owned by this faction, not already walled. If the
+                        // world changed under us, drop back to Wandering.
+                        let faction = self.npcs[i].faction;
+                        let tile = &self.map[ty as usize][tx as usize];
+                        let tile_ok = tile.terrain == Terrain::Wasteland
+                            && tile.wall.is_none()
+                            && tile.owner == Some(faction);
+                        let has_scrap = home_idx < self.capitals.len()
+                            && self.capitals[home_idx].scrap >= crate::config::WALL_SCRAP_COST;
+                        if tile_ok && has_scrap {
+                            self.capitals[home_idx].scrap -= crate::config::WALL_SCRAP_COST;
+                            self.npcs[i].last_failed_target = None;
+                            self.npcs[i].task =
+                                NpcTask::BuildingWall { tx, ty, started: now };
+                        } else {
+                            self.npcs[i].task = NpcTask::Wandering;
+                        }
+                    } else {
+                        // If another same-faction NPC grabbed this wall slot,
+                        // or the tile is no longer buildable, abandon.
+                        let faction = self.npcs[i].faction;
+                        let tile = &self.map[ty as usize][tx as usize];
+                        let tile_ok = tile.terrain == Terrain::Wasteland
+                            && tile.wall.is_none()
+                            && tile.owner == Some(faction);
+                        if !tile_ok || !self.wall_tile_open_for(tx, ty, i) {
+                            self.npcs[i].task = NpcTask::Wandering;
+                        } else if !self.step_npc_toward(i, AstarTarget::At(tx, ty)) {
+                            // Pathfinding failed — blacklist and re-pick next tick.
+                            self.npcs[i].last_failed_target = Some((tx, ty));
+                            self.npcs[i].task = NpcTask::Wandering;
+                        }
+                    }
+                    self.npcs[i].last_move = now;
+                }
                 NpcTask::Extracting { .. } => unreachable!("handled above"),
                 NpcTask::Claiming { .. } => unreachable!("handled above"),
+                NpcTask::BuildingWall { .. } => unreachable!("handled above"),
             }
         }
     }
@@ -853,6 +927,82 @@ impl GameState {
             }
         }
         true
+    }
+
+    /// Same-faction dedup for wall targets.
+    fn wall_tile_open_for(&self, tx: u16, ty: u16, self_npc_idx: usize) -> bool {
+        let self_faction = self.npcs[self_npc_idx].faction;
+        for (i, other) in self.npcs.iter().enumerate() {
+            if i == self_npc_idx {
+                continue;
+            }
+            if other.faction != self_faction {
+                continue;
+            }
+            match other.task {
+                NpcTask::TargetingWall { tx: otx, ty: oty }
+                | NpcTask::BuildingWall { tx: otx, ty: oty, .. } => {
+                    if otx == tx && oty == ty {
+                        return false;
+                    }
+                }
+                _ => {}
+            }
+        }
+        true
+    }
+
+    /// Find a fortress-wall tile that the NPC can build a wall on: it must
+    /// be on the home capital's `fortress_walls` list, already owned by this
+    /// faction, not yet walled, not currently targeted by another same-faction
+    /// NPC, and the home capital must have enough scrap.
+    ///
+    /// Returns the nearest such tile to the NPC's current position.
+    fn pick_wall_target(&self, npc_idx: usize) -> Option<(u16, u16)> {
+        let faction = self.npcs[npc_idx].faction;
+        let home_idx = self.npcs[npc_idx].home_capital_idx;
+        if home_idx >= self.capitals.len() {
+            return None;
+        }
+        let cap = &self.capitals[home_idx];
+        if cap.scrap < crate::config::WALL_SCRAP_COST {
+            return None;
+        }
+        if cap.fortress_walls.is_empty() {
+            return None;
+        }
+
+        let npc_x = self.npcs[npc_idx].x as i32;
+        let npc_y = self.npcs[npc_idx].y as i32;
+        let blacklist = self.npcs[npc_idx].last_failed_target;
+
+        let mut best: Option<(u16, u16, i32)> = None;
+        for &(tx, ty) in &cap.fortress_walls {
+            if Some((tx, ty)) == blacklist {
+                continue;
+            }
+            let tile = &self.map[ty as usize][tx as usize];
+            if tile.terrain != Terrain::Wasteland {
+                continue;
+            }
+            if tile.wall.is_some() {
+                continue; // already walled
+            }
+            if tile.owner != Some(faction) {
+                continue; // not ours yet — claim pass will handle it first
+            }
+            if self.is_capital_area(tx, ty) {
+                continue;
+            }
+            if !self.wall_tile_open_for(tx, ty, npc_idx) {
+                continue;
+            }
+            let dist = (tx as i32 - npc_x).abs() + (ty as i32 - npc_y).abs();
+            if best.map_or(true, |(_, _, bd)| dist < bd) {
+                best = Some((tx, ty, dist));
+            }
+        }
+        best.map(|(x, y, _)| (x, y))
     }
 
     /// Is this resource tile reachable by `self_npc_idx`?
@@ -1403,6 +1553,131 @@ impl GameState {
 
 /// Check if (x, y) is inside any capital's 3x3 area (for use during initial spawn,
 /// before `GameState` exists).
+/// Compute a fortress-wall tile list for a starting capital. The shape is a
+/// bounding box around the capital and its primary resource cluster, expanded
+/// by a 2-tile buffer on every side. The perimeter tiles of that box become
+/// the wall list, with two adjacent "gate" tiles removed on the side nearest
+/// the capital so NPCs always have a way in and out. Returns an empty list if
+/// no primary-terrain tile can be found within the search radius.
+fn compute_fortress_walls(
+    map: &[Vec<Tile>],
+    capital_x: u16,
+    capital_y: u16,
+    primary_terrain: Terrain,
+) -> Vec<(u16, u16)> {
+    let h = map.len() as i16;
+    let w = map[0].len() as i16;
+    let cx = capital_x as i16;
+    let cy = capital_y as i16;
+
+    // Step 1: find the bounding box of nearby primary-terrain tiles.
+    const SEARCH_RADIUS: i16 = 12;
+    let mut min_x = cx;
+    let mut max_x = cx;
+    let mut min_y = cy;
+    let mut max_y = cy;
+    let mut found_primary = false;
+    for dy in -SEARCH_RADIUS..=SEARCH_RADIUS {
+        for dx in -SEARCH_RADIUS..=SEARCH_RADIUS {
+            let tx = cx + dx;
+            let ty = cy + dy;
+            if tx < 0 || ty < 0 || tx >= w || ty >= h {
+                continue;
+            }
+            if map[ty as usize][tx as usize].terrain == primary_terrain {
+                if !found_primary {
+                    min_x = tx;
+                    max_x = tx;
+                    min_y = ty;
+                    max_y = ty;
+                    found_primary = true;
+                } else {
+                    min_x = min_x.min(tx);
+                    max_x = max_x.max(tx);
+                    min_y = min_y.min(ty);
+                    max_y = max_y.max(ty);
+                }
+            }
+        }
+    }
+    if !found_primary {
+        return Vec::new();
+    }
+
+    // Always include the capital itself in the box (otherwise walls might
+    // cut between city and cluster).
+    min_x = min_x.min(cx - 1);
+    max_x = max_x.max(cx + 1);
+    min_y = min_y.min(cy - 1);
+    max_y = max_y.max(cy + 1);
+
+    // Step 2: expand by the buffer so workers can pass between walls and
+    // resource tiles without getting stuck.
+    const BUFFER: i16 = 2;
+    let bx0 = (min_x - BUFFER).max(0);
+    let by0 = (min_y - BUFFER).max(0);
+    let bx1 = (max_x + BUFFER).min(w - 1);
+    let by1 = (max_y + BUFFER).min(h - 1);
+
+    // Step 3: collect perimeter tiles. Filter to wasteland so we skip any
+    // resource tiles that landed on the boundary line.
+    let mut perimeter: Vec<(u16, u16)> = Vec::new();
+    let push_if_valid = |x: i16, y: i16, out: &mut Vec<(u16, u16)>| {
+        if x < 0 || y < 0 || x >= w || y >= h {
+            return;
+        }
+        if map[y as usize][x as usize].terrain == Terrain::Wasteland {
+            out.push((x as u16, y as u16));
+        }
+    };
+    for x in bx0..=bx1 {
+        push_if_valid(x, by0, &mut perimeter);
+        push_if_valid(x, by1, &mut perimeter);
+    }
+    for y in (by0 + 1)..by1 {
+        push_if_valid(bx0, y, &mut perimeter);
+        push_if_valid(bx1, y, &mut perimeter);
+    }
+
+    // Step 4: pick 2 adjacent gate tiles — closest boundary tile to the
+    // capital plus one of its neighbors that's also on the perimeter. These
+    // get excluded from the wall list so NPCs have a way through.
+    if perimeter.len() < 3 {
+        return perimeter;
+    }
+    let closest_idx = perimeter
+        .iter()
+        .enumerate()
+        .min_by_key(|&(_, &(bx, by))| {
+            (bx as i16 - cx).abs() + (by as i16 - cy).abs()
+        })
+        .map(|(i, _)| i);
+    let closest_idx = match closest_idx {
+        Some(i) => i,
+        None => return perimeter,
+    };
+    let closest = perimeter[closest_idx];
+    // Find a perimeter tile cardinally adjacent to the closest
+    let adj_idx = perimeter.iter().position(|&(bx, by)| {
+        let dx = (bx as i16 - closest.0 as i16).abs();
+        let dy = (by as i16 - closest.1 as i16).abs();
+        dx + dy == 1
+    });
+    if let Some(ai) = adj_idx {
+        let (low, high) = if closest_idx < ai {
+            (closest_idx, ai)
+        } else {
+            (ai, closest_idx)
+        };
+        perimeter.remove(high);
+        perimeter.remove(low);
+    } else {
+        perimeter.remove(closest_idx);
+    }
+
+    perimeter
+}
+
 /// Multi-source BFS producing a distance field: for each tile, the manhattan
 /// distance (in terms of 4-connected grid steps) to the nearest tile of the
 /// given `terrain` type. Tiles of the target terrain are distance 0; all
