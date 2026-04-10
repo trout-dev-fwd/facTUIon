@@ -9,6 +9,7 @@ Central home for every tunable constant in the game. Changing gameplay values, c
 3. **Units** — `NPCS_PER_FACTION` (starting count per faction), `CAPITAL_MIN_OPEN_SIDES` (legacy placement heuristic).
 4. **Economy** — starting stockpiles, `MAX_STOCKPILE` cap, decay interval, per-resource decay toggles (`DECAY_WATER/FUEL/SCRAP`), dehydration interval.
 5. **Fuel speed bonuses** — `FUEL_THRESHOLDS` array + `FUEL_SPEED_BONUS_PCT` per tier, `NPC_BASE_MOVE_MS`. Used by `Capital::npc_move_cooldown()`.
+6. **NPC behavior** — `MAX_HOARD_BEFORE_USE` (the stockpile threshold at which NPCs stop harvesting a resource type; once every resource is capped the NPC just wanders). Future NPC expenditure behaviors (wall building, trading) will key off this same threshold.
 6. **Display** — RGB constants for the terminal theme (`TERMINAL_FG`, `TERMINAL_BG`, `TERMINAL_GRAY`, `TERMINAL_DARK_BG`, `TERMINAL_LIGHT_BG`, `TERMINAL_PURPLE`). Entity glyphs use `TERMINAL_BG` as foreground when on colored territory for contrast.
 7. **Animation** — `ANIM_TICK_MS` (water ripple / wasteland dust cycle rate).
 8. **Player action times and costs** — `EXTRACT_TIME_MS`, `CLAIM_TIME_MS`, `CLAIM_CONTESTED_MULTIPLIER`, `CLAIM_SCRAP_COST`, `PLAYER_STARTING_SCRAP`.

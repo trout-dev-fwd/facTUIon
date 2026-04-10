@@ -38,7 +38,7 @@ Read-only methods the renderer and actions use to understand world state.
 ### Per-frame updates
 Called from `main.rs` game loop each frame. Internally time-gated.
 - `update_anim()` — advances `anim_tick` every `ANIM_TICK_MS`.
-- `update_npcs()` — Phase 1 wandering. Each NPC picks a random cardinal direction on its own cooldown (derived from home capital's fuel tier). Deterministic via `sim_rng`.
+- `update_npcs()` — Phase 2 state machine (see `docs/types/npc.md` for the `NpcTask` enum). Each NPC advances its task on its per-faction cooldown: idle NPCs pick a harvest target via `pick_harvest_target`, walk toward it via `step_npc_toward`, extract on `EXTRACT_TIME_MS`, then carry the resource home and deposit it. `Extracting` is time-based (not cooldown-gated). Random wander is the fallback when no target is available. Deterministic via `sim_rng`.
 - `update_decay()` — every `DECAY_INTERVAL_MS`, each capital loses resources equal to its assigned `population_of`, respecting `DECAY_*` per-resource config toggles.
 - `update_dehydration()` — every `DEHYDRATION_INTERVAL_MS`, each capital with 0 water removes one of its own assigned NPCs.
 
@@ -46,6 +46,12 @@ Called from `main.rs` game loop each frame. Internally time-gated.
 - `is_blocked(x, y)` — the canonical "can you walk there?" check. Blocks on: edges, non-wasteland terrain, walls (`tile.wall`), capital footprints, and NPCs. Used for player movement and post-action player nudging.
 - `is_blocked_for_npc(x, y, self_idx)` — like `is_blocked` but excludes the NPC at `self_idx` (so NPCs don't block themselves) and includes the player position (so NPCs can't overlap the player). `pub(super)` so `actions.rs` can call it when evicting NPCs after city/camp founding.
 - `move_player(dx, dy)` — weight-scaled cooldown, then collision check, then updates position. **Also cancels every in-progress `Player.*State` field** — moving aborts any action.
+
+### NPC harvest helpers (private, used only by `update_npcs`)
+- `pick_harvest_target(npc_idx)` — returns the nearest accessible `(x, y, Terrain)` resource tile the NPC's home capital still needs. Iterates resource types by lowest stockpile first; skips any resource at or above `MAX_HOARD_BEFORE_USE`. Returns `None` if everything is capped or unreachable.
+- `resource_accessible(tx, ty, self_npc_idx)` — true if (a) at least one cardinal neighbor is walkable wasteland and (b) no other NPC is already Targeting or Extracting this specific resource tile. Used to prevent two NPCs converging on the same tile.
+- `step_npc_toward(i, tx, ty)` — greedy single-step movement toward (tx, ty). Prefers the axis with the larger remaining distance; falls back to the other axis if blocked. No A* — if both are blocked, the NPC stays put for this tick.
+- `npc_adjacent_to_home(i)` — true if the NPC is cardinally adjacent to any footprint tile of its home capital. Gates the deposit transition in `Returning`.
 
 ## Module-level spawn helpers
 These are free functions (not methods) because they're called during `new()` before the `GameState` exists.

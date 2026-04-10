@@ -1,6 +1,6 @@
 use super::faction::FactionId;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Terrain {
     Wasteland, // .
     Water,     // ~

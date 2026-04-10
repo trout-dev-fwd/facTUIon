@@ -4,7 +4,7 @@ use rand::SeedableRng;
 
 use super::capital::{Capital, CapitalKind};
 use super::faction::FactionId;
-use super::npc::Npc;
+use super::npc::{Npc, NpcTask};
 use super::player::Player;
 use super::terrain::{Terrain, Tile};
 
@@ -104,6 +104,8 @@ impl GameState {
                     faction: cap.faction,
                     home_capital_idx: cap_idx,
                     last_move: std::time::Instant::now(),
+                    task: NpcTask::Wandering,
+                    carrying: None,
                 });
             }
         }
@@ -279,12 +281,26 @@ impl GameState {
         }
     }
 
-    /// Phase 1: each NPC wanders one tile in a random direction on its cooldown.
+    /// Phase 2: NPCs harvest resources. Each NPC is a small state machine
+    /// (Wandering → TargetingResource → Extracting → Returning → Wandering).
+    /// Movement still respects the per-faction fuel-scaled cooldown.
     pub fn update_npcs(&mut self) {
         let now = std::time::Instant::now();
         let dirs: [(i16, i16); 4] = [(0, -1), (1, 0), (0, 1), (-1, 0)];
 
         for i in 0..self.npcs.len() {
+            let task = self.npcs[i].task;
+
+            // Extracting is time-based, not cooldown-based
+            if let NpcTask::Extracting { started, terrain } = task {
+                if now.duration_since(started).as_millis() >= crate::config::EXTRACT_TIME_MS as u128 {
+                    self.npcs[i].carrying = Some(terrain);
+                    self.npcs[i].task = NpcTask::Returning;
+                }
+                continue;
+            }
+
+            // All movement/decision tasks are gated by the per-NPC cooldown
             let faction = self.npcs[i].faction;
             let cooldown = self
                 .capitals
@@ -292,26 +308,220 @@ impl GameState {
                 .find(|c| c.faction == faction)
                 .map(|c| c.npc_move_cooldown())
                 .unwrap_or(crate::config::NPC_BASE_MOVE_MS);
-
-            let last = self.npcs[i].last_move;
-            if now.duration_since(last).as_millis() < cooldown as u128 {
+            if now.duration_since(self.npcs[i].last_move).as_millis() < cooldown as u128 {
                 continue;
             }
 
-            let d = dirs[self.sim_rng.gen_range(0..4)];
-            let nx = self.npcs[i].x as i16 + d.0;
-            let ny = self.npcs[i].y as i16 + d.1;
-
-            if self.is_blocked_for_npc(nx, ny, i) {
-                // Still count this as a tick so they don't retry instantly on the next frame
-                self.npcs[i].last_move = now;
-                continue;
+            match task {
+                NpcTask::Wandering => {
+                    // Try to pick a harvest target first
+                    if let Some((tx, ty, terrain)) = self.pick_harvest_target(i) {
+                        self.npcs[i].task = NpcTask::TargetingResource { tx, ty, terrain };
+                    } else {
+                        // Nothing to harvest — take a random step
+                        let d = dirs[self.sim_rng.gen_range(0..4)];
+                        let nx = self.npcs[i].x as i16 + d.0;
+                        let ny = self.npcs[i].y as i16 + d.1;
+                        if !self.is_blocked_for_npc(nx, ny, i) {
+                            self.npcs[i].x = nx as u16;
+                            self.npcs[i].y = ny as u16;
+                        }
+                    }
+                    self.npcs[i].last_move = now;
+                }
+                NpcTask::TargetingResource { tx, ty, terrain } => {
+                    // If adjacent, start extracting; else step toward
+                    let dist = (self.npcs[i].x as i16 - tx as i16).abs()
+                        + (self.npcs[i].y as i16 - ty as i16).abs();
+                    if dist == 1 {
+                        self.npcs[i].task = NpcTask::Extracting { started: now, terrain };
+                    } else {
+                        // If the target has become inaccessible (e.g. another NPC claimed
+                        // it), drop back to Wandering and let the next tick repick.
+                        if !self.resource_accessible(tx, ty, i) {
+                            self.npcs[i].task = NpcTask::Wandering;
+                        } else {
+                            self.step_npc_toward(i, tx, ty);
+                        }
+                    }
+                    self.npcs[i].last_move = now;
+                }
+                NpcTask::Returning => {
+                    if self.npc_adjacent_to_home(i) {
+                        // Deposit
+                        if let Some(terrain) = self.npcs[i].carrying {
+                            let home_idx = self.npcs[i].home_capital_idx;
+                            if home_idx < self.capitals.len() {
+                                let cap = &mut self.capitals[home_idx];
+                                let max = crate::config::MAX_STOCKPILE;
+                                match terrain {
+                                    Terrain::Water => cap.water = (cap.water + 1).min(max),
+                                    Terrain::Rocky => cap.fuel = (cap.fuel + 1).min(max),
+                                    Terrain::Ruins => cap.scrap = (cap.scrap + 1).min(max),
+                                    _ => {}
+                                }
+                            }
+                        }
+                        self.npcs[i].carrying = None;
+                        self.npcs[i].task = NpcTask::Wandering;
+                    } else {
+                        let home_idx = self.npcs[i].home_capital_idx;
+                        if home_idx < self.capitals.len() {
+                            let (cx, cy) = (self.capitals[home_idx].x, self.capitals[home_idx].y);
+                            self.step_npc_toward(i, cx, cy);
+                        }
+                    }
+                    self.npcs[i].last_move = now;
+                }
+                NpcTask::Extracting { .. } => unreachable!("handled above"),
             }
-
-            self.npcs[i].x = nx as u16;
-            self.npcs[i].y = ny as u16;
-            self.npcs[i].last_move = now;
         }
+    }
+
+    /// Pick the nearest accessible resource tile the NPC's home capital still needs.
+    /// Iterates resource types in order of neediness (lowest stockpile first) and
+    /// skips any resource whose stockpile has reached `MAX_HOARD_BEFORE_USE`.
+    fn pick_harvest_target(&self, npc_idx: usize) -> Option<(u16, u16, Terrain)> {
+        let home_idx = self.npcs[npc_idx].home_capital_idx;
+        if home_idx >= self.capitals.len() {
+            return None;
+        }
+        let cap = &self.capitals[home_idx];
+        let threshold = crate::config::MAX_HOARD_BEFORE_USE;
+
+        // Build a (terrain, current_amount) list of needs, sorted by lowest amount
+        let mut needs: Vec<(Terrain, u32)> = Vec::new();
+        if cap.water < threshold {
+            needs.push((Terrain::Water, cap.water));
+        }
+        if cap.fuel < threshold {
+            needs.push((Terrain::Rocky, cap.fuel));
+        }
+        if cap.scrap < threshold {
+            needs.push((Terrain::Ruins, cap.scrap));
+        }
+        needs.sort_by_key(|&(_, amt)| amt);
+
+        let npc_x = self.npcs[npc_idx].x;
+        let npc_y = self.npcs[npc_idx].y;
+
+        for (terrain, _) in needs {
+            let mut best: Option<(u16, u16, i32)> = None;
+            for (y, row) in self.map.iter().enumerate() {
+                for (x, tile) in row.iter().enumerate() {
+                    if tile.terrain != terrain {
+                        continue;
+                    }
+                    if !self.resource_accessible(x as u16, y as u16, npc_idx) {
+                        continue;
+                    }
+                    let dist = (x as i32 - npc_x as i32).abs() + (y as i32 - npc_y as i32).abs();
+                    if best.map_or(true, |(_, _, bd)| dist < bd) {
+                        best = Some((x as u16, y as u16, dist));
+                    }
+                }
+            }
+            if let Some((tx, ty, _)) = best {
+                return Some((tx, ty, terrain));
+            }
+        }
+        None
+    }
+
+    /// Is this resource tile reachable by `self_npc_idx`?
+    /// - At least one cardinal neighbor must be walkable wasteland
+    /// - No other NPC can already be Targeting or Extracting this specific tile
+    fn resource_accessible(&self, tx: u16, ty: u16, self_npc_idx: usize) -> bool {
+        for (i, other) in self.npcs.iter().enumerate() {
+            if i == self_npc_idx {
+                continue;
+            }
+            match other.task {
+                NpcTask::TargetingResource { tx: otx, ty: oty, .. } => {
+                    if otx == tx && oty == ty {
+                        return false;
+                    }
+                }
+                NpcTask::Extracting { .. } => {
+                    // The other NPC is adjacent to their target resource; if that's this
+                    // tile, we're blocked.
+                    let dx = (other.x as i16 - tx as i16).abs();
+                    let dy = (other.y as i16 - ty as i16).abs();
+                    if dx + dy == 1 {
+                        return false;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // At least one cardinal neighbor must be walkable (wasteland, no wall, no capital)
+        let dirs: [(i16, i16); 4] = [(0, -1), (1, 0), (0, 1), (-1, 0)];
+        let w = self.map[0].len() as i16;
+        let h = self.map.len() as i16;
+        for (dx, dy) in dirs {
+            let nx = tx as i16 + dx;
+            let ny = ty as i16 + dy;
+            if nx < 0 || nx >= w || ny < 0 || ny >= h {
+                continue;
+            }
+            let ntile = &self.map[ny as usize][nx as usize];
+            if ntile.terrain == Terrain::Wasteland
+                && ntile.wall.is_none()
+                && !self.is_capital_area(nx as u16, ny as u16)
+            {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Greedy single-step movement toward (tx, ty). Prefers the axis with the larger
+    /// remaining distance; falls back to the other axis if the primary step is blocked.
+    fn step_npc_toward(&mut self, i: usize, tx: u16, ty: u16) {
+        let npc_x = self.npcs[i].x;
+        let npc_y = self.npcs[i].y;
+        let dx = tx as i16 - npc_x as i16;
+        let dy = ty as i16 - npc_y as i16;
+
+        let (primary, secondary) = if dx.abs() >= dy.abs() {
+            ((dx.signum(), 0i16), (0i16, dy.signum()))
+        } else {
+            ((0i16, dy.signum()), (dx.signum(), 0i16))
+        };
+
+        for (sx, sy) in [primary, secondary] {
+            if sx == 0 && sy == 0 {
+                continue;
+            }
+            let nx = npc_x as i16 + sx;
+            let ny = npc_y as i16 + sy;
+            if !self.is_blocked_for_npc(nx, ny, i) {
+                self.npcs[i].x = nx as u16;
+                self.npcs[i].y = ny as u16;
+                return;
+            }
+        }
+        // Both blocked — stay put this tick
+    }
+
+    /// True if the NPC is cardinally adjacent to any tile of its home capital's footprint.
+    fn npc_adjacent_to_home(&self, i: usize) -> bool {
+        let npc = &self.npcs[i];
+        let home_idx = npc.home_capital_idx;
+        if home_idx >= self.capitals.len() {
+            return false;
+        }
+        let home = &self.capitals[home_idx];
+        let dirs: [(i16, i16); 4] = [(0, -1), (1, 0), (0, 1), (-1, 0)];
+        for (dx, dy) in dirs {
+            let nx = npc.x as i16 + dx;
+            let ny = npc.y as i16 + dy;
+            if nx >= 0 && ny >= 0 && home.is_inside(nx as u16, ny as u16) {
+                return true;
+            }
+        }
+        false
     }
 
     /// Decay resources: each capital loses 1 of each resource per assigned member every interval.

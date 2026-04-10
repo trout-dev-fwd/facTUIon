@@ -31,6 +31,11 @@ pub const FUEL_THRESHOLDS: [u32; 4] = [5, 10, 15, 20];
 pub const FUEL_SPEED_BONUS_PCT: u32 = 10; // % faster per threshold reached
 pub const NPC_BASE_MOVE_MS: u64 = 400; // NPC base movement cooldown
 
+// NPC behavior
+/// Once a home capital's stockpile of a resource reaches this amount,
+/// NPCs stop harvesting it (future: start spending it on walls, trade, etc.).
+pub const MAX_HOARD_BEFORE_USE: u32 = 15;
+
 // Display
 // Terminal theme — set these to match your terminal's color scheme
 // Entity glyphs use FG when off territory, BG when on colored territory
