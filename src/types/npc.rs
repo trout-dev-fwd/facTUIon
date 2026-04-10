@@ -39,6 +39,12 @@ pub struct Npc {
     pub carrying_water: u32,
     pub carrying_fuel: u32,
     pub carrying_scrap: u32,
+    /// A recently-abandoned target tile that pathfinding couldn't reach.
+    /// `pick_harvest_target` skips this tile in its first pass, forcing the
+    /// NPC to try a *different* resource tile rather than getting stuck
+    /// re-picking the same unreachable one. Cleared when the NPC successfully
+    /// starts extracting (transitions to `Extracting`).
+    pub last_failed_target: Option<(u16, u16)>,
 }
 
 impl Npc {

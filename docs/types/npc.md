@@ -34,6 +34,7 @@ Variants:
 - `task: NpcTask` — current state.
 - `carrying_water`, `carrying_fuel`, `carrying_scrap` — per-resource inventory. Total is capped at `config::CARRY_CAP` (same as the player).
 - `carrying_total()` — helper returning the sum across all three slots. Used for weight-based cooldown and carry-cap checks.
+- `last_failed_target: Option<(u16, u16)>` — a tile that pathfinding recently couldn't reach. `pick_harvest_target` skips it in the first pass so the NPC picks a different resource tile instead of looping back to the same unreachable one. Cleared when the NPC successfully reaches an adjacent tile and transitions to `Extracting`.
 
 ## Notes
 - **Carry cap matches the player**: NPCs can hold up to `CARRY_CAP` (5) items mixed across water/fuel/scrap, and their movement cooldown scales with total weight via `NPC_MOVE_COOLDOWN[weight]`.

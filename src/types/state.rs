@@ -124,6 +124,7 @@ impl GameState {
                     carrying_water: 0,
                     carrying_fuel: 0,
                     carrying_scrap: 0,
+                    last_failed_target: None,
                 });
             }
         }
@@ -394,14 +395,21 @@ impl GameState {
                     let dist = (self.npcs[i].x as i16 - tx as i16).abs()
                         + (self.npcs[i].y as i16 - ty as i16).abs();
                     if dist == 1 {
+                        // Successful approach — clear any stale blacklist
+                        self.npcs[i].last_failed_target = None;
                         self.npcs[i].task = NpcTask::Extracting { tx, ty, started: now, terrain };
                     } else {
                         // If the target has become inaccessible (e.g. another NPC claimed
                         // it), drop back to Wandering and let the next tick repick.
                         if !self.resource_accessible(tx, ty, i) {
                             self.npcs[i].task = NpcTask::Wandering;
-                        } else {
-                            self.step_npc_toward(i, AstarTarget::AdjacentTo(tx, ty));
+                        } else if !self.step_npc_toward(i, AstarTarget::AdjacentTo(tx, ty)) {
+                            // Pathfinding failed — blacklist this target and re-pick
+                            // next tick. `pick_harvest_target` will skip it and look
+                            // for another resource tile of the same type (or any other
+                            // reachable resource).
+                            self.npcs[i].last_failed_target = Some((tx, ty));
+                            self.npcs[i].task = NpcTask::Wandering;
                         }
                     }
                     self.npcs[i].last_move = now;
@@ -447,7 +455,31 @@ impl GameState {
     /// they don't over-fetch a single type. Skips resources where the effective
     /// amount has already reached `MAX_HOARD_BEFORE_USE`. Also skips if the NPC
     /// is already at their carry cap.
+    ///
+    /// If the NPC has a `last_failed_target` (a tile pathfinding couldn't reach),
+    /// the first pass skips that tile so the NPC will try a *different* resource
+    /// of the same type instead of looping back to the same unreachable target.
+    /// If no alternatives exist, a second pass includes the failed tile as a
+    /// last resort.
     fn pick_harvest_target(&self, npc_idx: usize) -> Option<(u16, u16, Terrain)> {
+        let blacklist = self.npcs[npc_idx].last_failed_target;
+
+        // First pass: skip the blacklisted tile
+        if let Some(result) = self.pick_harvest_target_impl(npc_idx, blacklist) {
+            return Some(result);
+        }
+        // Fallback: allow the blacklisted tile as a last resort
+        if blacklist.is_some() {
+            return self.pick_harvest_target_impl(npc_idx, None);
+        }
+        None
+    }
+
+    fn pick_harvest_target_impl(
+        &self,
+        npc_idx: usize,
+        skip: Option<(u16, u16)>,
+    ) -> Option<(u16, u16, Terrain)> {
         let npc = &self.npcs[npc_idx];
         if npc.carrying_total() >= crate::config::CARRY_CAP {
             return None;
@@ -483,6 +515,9 @@ impl GameState {
                     Some(a) if a < threshold => a,
                     _ => continue, // not a resource, or already enough combined
                 };
+                if skip == Some((x as u16, y as u16)) {
+                    continue;
+                }
                 if !self.resource_accessible(x as u16, y as u16, npc_idx) {
                     continue;
                 }
@@ -547,7 +582,13 @@ impl GameState {
         false
     }
 
-    /// Single-step movement toward a target. Runs A* twice if necessary:
+    /// Single-step movement toward a target. Runs A* up to twice and returns
+    /// `true` if the A* plan was followed. Returns `false` if neither A* pass
+    /// could produce a usable step — the caller can use this as a signal to
+    /// abandon the current target and pick a different one (via
+    /// `last_failed_target`).
+    ///
+    /// Passes:
     /// 1. **Crowd-aware** pass that treats other NPCs as blockers — finds
     ///    paths that route *around* peers, so an NPC can approach a resource
     ///    from a different cardinal side when their preferred approach is
@@ -555,9 +596,9 @@ impl GameState {
     /// 2. **Static-only** fallback that plans through peer NPCs — used when
     ///    the NPC is temporarily boxed in by a crowd and the first pass
     ///    returns None.
-    /// 3. **Random** fallback if both A* passes fail (or their first step is
-    ///    still blocked by a transient peer collision).
-    fn step_npc_toward(&mut self, i: usize, target: AstarTarget) {
+    /// 3. **Random** fallback if both A* passes fail; still counts as a
+    ///    planning failure (returns `false`).
+    fn step_npc_toward(&mut self, i: usize, target: AstarTarget) -> bool {
         use rand::Rng;
 
         // Pass 1: A* that respects NPC blockers
@@ -567,7 +608,7 @@ impl GameState {
             if !self.is_blocked_for_npc(nx, ny, i) {
                 self.npcs[i].x = nx as u16;
                 self.npcs[i].y = ny as u16;
-                return;
+                return true;
             }
         }
 
@@ -579,11 +620,12 @@ impl GameState {
             if !self.is_blocked_for_npc(nx, ny, i) {
                 self.npcs[i].x = nx as u16;
                 self.npcs[i].y = ny as u16;
-                return;
+                return true;
             }
         }
 
-        // Last resort: random cardinal step
+        // Last resort: random cardinal step. Still counts as path failure —
+        // the caller should blacklist the target and re-pick next tick.
         let npc_x = self.npcs[i].x;
         let npc_y = self.npcs[i].y;
         let dirs: [(i16, i16); 4] = [(0, -1), (1, 0), (0, 1), (-1, 0)];
@@ -595,10 +637,11 @@ impl GameState {
             if !self.is_blocked_for_npc(nx, ny, i) {
                 self.npcs[i].x = nx as u16;
                 self.npcs[i].y = ny as u16;
-                return;
+                return false;
             }
         }
         // Completely boxed in — stay put
+        false
     }
 
     /// A* pathfinding from the NPC's position to the first tile satisfying the
@@ -831,6 +874,7 @@ impl GameState {
             carrying_water: 0,
             carrying_fuel: 0,
             carrying_scrap: 0,
+            last_failed_target: None,
         });
     }
 
