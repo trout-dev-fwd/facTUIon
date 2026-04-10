@@ -18,7 +18,16 @@ pub const CAPITAL_MIN_OPEN_SIDES: usize = 3;
 // Economy
 pub const STARTING_STOCKPILE: u32 = 10;
 pub const STARTING_CROWNS: u32 = 100;
+/// Resource cap for a tier-1 city. Effective cap = `tier * MAX_STOCKPILE`.
 pub const MAX_STOCKPILE: u32 = 20;
+/// How many units below the cap NPCs reserve — harvest stops at
+/// `resource_cap - HOARD_BUFFER` so there's always a small buffer below cap.
+pub const HOARD_BUFFER: u32 = 5;
+/// Highest tier a city can be upgraded to.
+pub const MAX_CITY_TIER: u32 = 5;
+/// Per-resource upgrade cost multiplied by the capital's current tier.
+/// Tier 1 → 2 = 10, tier 2 → 3 = 20, etc. Cost applies to all 3 resources.
+pub const BASE_UPGRADE_COST: u32 = 10;
 pub const DECAY_INTERVAL_MS: u64 = 30_000; // resource decay every 30 seconds
 pub const DECAY_WATER: bool = true;
 pub const DECAY_FUEL: bool = true;
@@ -35,9 +44,6 @@ pub const FUEL_SPEED_BONUS_PCT: u32 = 20; // % faster per threshold reached
 pub const NPC_MOVE_COOLDOWN: [u64; 6] = [400, 475, 550, 625, 700, 775];
 
 // NPC behavior
-/// Once a home capital's stockpile of a resource reaches this amount,
-/// NPCs stop harvesting it (future: start spending it on walls, trade, etc.).
-pub const MAX_HOARD_BEFORE_USE: u32 = 15;
 /// Target picker scoring weight for scarcity.
 ///
 /// `score = distance + effective_amount * NPC_SCARCITY_WEIGHT`
@@ -49,12 +55,10 @@ pub const MAX_HOARD_BEFORE_USE: u32 = 15;
 /// hit `MAX_HOARD_BEFORE_USE` and are skipped entirely.
 pub const NPC_SCARCITY_WEIGHT: i32 = 2;
 
-// Population growth — triggered at the moment water crosses the threshold
-// (not on a timer). Any action that increases a capital's water stockpile
-// will check for growth immediately after the increase.
-/// Water stockpile required to trigger an NPC conversion. Defaults to the
-/// cap (20) so growth only happens when the capital is maxed out on water.
-pub const WATER_GROWTH_THRESHOLD: u32 = MAX_STOCKPILE;
+// Population growth — triggered at the moment water crosses the per-capital
+// cap (not on a timer). Growth is limited to a target NPC count derived from
+// the capital's current tier (see `Capital::npc_target`). Beyond that target,
+// excess water goes toward city upgrades instead (see `try_grow_or_upgrade`).
 /// Water cost to spawn one new NPC.
 pub const WATER_GROWTH_COST: u32 = 5;
 

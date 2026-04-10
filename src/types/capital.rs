@@ -16,6 +16,10 @@ pub struct Capital {
     pub scrap: u32,
     pub crowns: u32,
     pub scrap_invested: u32, // cities: 5 = foundation, 10 = complete. camps: always complete.
+    /// City upgrade tier (1-5). Higher tiers increase resource cap, NPC target
+    /// population, and the upgrade cost for the next step. Camps stay at tier 1
+    /// and currently don't upgrade.
+    pub tier: u32,
 }
 
 impl Capital {
@@ -26,9 +30,53 @@ impl Capital {
         }
     }
 
-    /// The letter glyph shown at the center tile.
-    pub fn center_glyph(&self) -> char {
-        self.faction.glyph()
+    /// 2-character label for the center tile of the map render. Cities show
+    /// the faction letter + tier digit ("W1", "G3", etc.); camps show the
+    /// faction letter + space ("C ").
+    pub fn center_label(&self) -> String {
+        match self.kind {
+            CapitalKind::City => format!("{}{}", self.faction.glyph(), self.tier),
+            CapitalKind::Camp => format!("{} ", self.faction.glyph()),
+        }
+    }
+
+    /// Maximum stockpile this capital can hold, scaling with tier. Tier 1 = 20,
+    /// tier 2 = 40, ..., tier 5 = 100.
+    pub fn resource_cap(&self) -> u32 {
+        self.tier * crate::config::MAX_STOCKPILE
+    }
+
+    /// NPC harvest stops once a resource reaches this amount (a small buffer
+    /// below the effective cap). NPCs resume once decay drops the stockpile
+    /// back below this point.
+    pub fn harvest_threshold(&self) -> u32 {
+        self.resource_cap().saturating_sub(crate::config::HOARD_BUFFER)
+    }
+
+    /// Target population for this capital — NPCs grow via the water-spend
+    /// mechanic until the population reaches this count, then the AI shifts
+    /// toward upgrading instead.
+    pub fn npc_target(&self) -> u32 {
+        self.resource_cap() / 4
+    }
+
+    /// Per-resource cost to upgrade from the current tier to the next. Paid
+    /// simultaneously in water, fuel, and scrap.
+    pub fn upgrade_cost(&self) -> u32 {
+        self.tier * crate::config::BASE_UPGRADE_COST
+    }
+
+    /// True if this city could be upgraded right now: not at max tier, and
+    /// all three stockpiles cover the cost.
+    pub fn can_upgrade(&self) -> bool {
+        if self.kind != CapitalKind::City {
+            return false;
+        }
+        if self.tier >= crate::config::MAX_CITY_TIER {
+            return false;
+        }
+        let cost = self.upgrade_cost();
+        self.water >= cost && self.fuel >= cost && self.scrap >= cost
     }
 
     /// Returns true if (x, y) is one of this capital's footprint tiles

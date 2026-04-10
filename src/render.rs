@@ -73,8 +73,10 @@ pub fn render(f: &mut Frame, state: &GameState) {
                 ));
             } else if let Some(cap) = state.capital_at(col as u16, row as u16) {
                 if cap.is_complete() {
+                    // center_label is already 2 chars (e.g. "W1" for tier-1
+                    // city, "C " for camp) so no trailing space is needed.
                     spans.push(Span::styled(
-                        format!("{} ", cap.center_glyph()),
+                        cap.center_label(),
                         Style::default().fg(crate::config::TERMINAL_BG).bg(cap.faction.color()),
                     ));
                 } else {
@@ -273,19 +275,25 @@ pub fn render(f: &mut Frame, state: &GameState) {
         let cap = &state.capitals[cap_idx];
         let pop = state.population_of(cap_idx);
 
+        let max = cap.resource_cap();
+        let target = cap.npc_target();
+        let badge = match cap.kind {
+            crate::types::CapitalKind::City => format!(" [{}{}] ", cap.faction.glyph(), cap.tier),
+            crate::types::CapitalKind::Camp => format!(" [{}] ", cap.faction.glyph()),
+        };
         let hud_cap = Line::from(vec![
             Span::styled(
-                format!(" [{}] ", cap.faction.glyph()),
+                badge,
                 Style::default().fg(crate::config::TERMINAL_BG).bg(cap.faction.color()),
             ),
             Span::styled(
                 format!(
-                    " ≈{}/{}  *{}/{}  °{}/{}  ₵{}  POP:{}",
-                    cap.water, crate::config::MAX_STOCKPILE,
-                    cap.fuel, crate::config::MAX_STOCKPILE,
-                    cap.scrap, crate::config::MAX_STOCKPILE,
+                    " ≈{}/{}  *{}/{}  °{}/{}  ₵{}  POP:{}/{}",
+                    cap.water, max,
+                    cap.fuel, max,
+                    cap.scrap, max,
                     cap.crowns,
-                    pop,
+                    pop, target,
                 ),
                 Style::default().fg(cap.faction.color()),
             ),

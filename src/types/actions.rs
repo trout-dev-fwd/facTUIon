@@ -151,15 +151,14 @@ impl GameState {
         }
 
         *player_field(&mut self.player) -= 1;
+        let max = self.capitals[cap_idx].resource_cap();
         let cap = &mut self.capitals[cap_idx];
         let cap_val = cap_field(cap);
-        *cap_val = (*cap_val + 1).min(crate::config::MAX_STOCKPILE);
+        *cap_val = (*cap_val + 1).min(max);
         self.player.crowns += crate::config::BASE_SELL_PRICE;
 
-        // Selling water can push the capital over the growth threshold.
-        if resource == 1 {
-            self.try_grow_capital(cap_idx);
-        }
+        // Any sale may enable growth or a city upgrade.
+        self.try_grow_or_upgrade(cap_idx);
     }
 
     /// Buy a resource from the adjacent capital: player gains resource, loses crowns, capital loses resource.
@@ -355,6 +354,7 @@ impl GameState {
                     crowns: 0,
                     scrap_invested: crate::config::FOUNDATION_SCRAP_COST,
                     kind: CapitalKind::City,
+                    tier: 1,
                 });
 
                 let cx = px as i16;
@@ -472,6 +472,7 @@ impl GameState {
                     scrap: 0,
                     crowns: 0,
                     scrap_invested: 0,
+                    tier: 1,
                 });
 
                 let cx = px as i16;

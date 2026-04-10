@@ -56,6 +56,7 @@ impl GameState {
                 crowns: crate::config::STARTING_CROWNS,
                 scrap_invested: crate::config::CITY_TOTAL_SCRAP,
                 kind: CapitalKind::City,
+                tier: 1,
             })
             .collect();
 
@@ -337,7 +338,7 @@ impl GameState {
                                 Terrain::Ruins => cap.scrap,
                                 _ => u32::MAX,
                             };
-                            stock < crate::config::MAX_HOARD_BEFORE_USE
+                            stock < cap.harvest_threshold()
                         } else {
                             false
                         };
@@ -416,12 +417,13 @@ impl GameState {
                 }
                 NpcTask::Returning => {
                     if self.npc_adjacent_to_home(i) {
-                        // Deposit all carried resources
+                        // Deposit all carried resources, capped at the
+                        // capital's tier-scaled `resource_cap()`.
                         let home_idx = self.npcs[i].home_capital_idx;
-                        let deposited_water = self.npcs[i].carrying_water > 0;
+                        let any_deposited = self.npcs[i].carrying_total() > 0;
                         if home_idx < self.capitals.len() {
                             let cap = &mut self.capitals[home_idx];
-                            let max = crate::config::MAX_STOCKPILE;
+                            let max = cap.resource_cap();
                             cap.water = (cap.water + self.npcs[i].carrying_water).min(max);
                             cap.fuel = (cap.fuel + self.npcs[i].carrying_fuel).min(max);
                             cap.scrap = (cap.scrap + self.npcs[i].carrying_scrap).min(max);
@@ -430,9 +432,9 @@ impl GameState {
                         self.npcs[i].carrying_fuel = 0;
                         self.npcs[i].carrying_scrap = 0;
                         self.npcs[i].task = NpcTask::Wandering;
-                        // Growth check if water was deposited
-                        if deposited_water {
-                            self.try_grow_capital(home_idx);
+                        // Any resource deposit may enable growth or upgrade.
+                        if any_deposited {
+                            self.try_grow_or_upgrade(home_idx);
                         }
                     } else {
                         let home_idx = self.npcs[i].home_capital_idx;
@@ -453,8 +455,8 @@ impl GameState {
     /// Scores every candidate by `(stockpile + already_carrying) * SCARCITY_WEIGHT + distance`
     /// — "effective amount" accounts for what this NPC will deposit on return so
     /// they don't over-fetch a single type. Skips resources where the effective
-    /// amount has already reached `MAX_HOARD_BEFORE_USE`. Also skips if the NPC
-    /// is already at their carry cap.
+    /// amount has already reached the home capital's `harvest_threshold()`. Also
+    /// skips if the NPC is already at their carry cap.
     ///
     /// If the NPC has a `last_failed_target` (a tile pathfinding couldn't reach),
     /// the first pass skips that tile so the NPC will try a *different* resource
@@ -489,7 +491,7 @@ impl GameState {
             return None;
         }
         let cap = &self.capitals[home_idx];
-        let threshold = crate::config::MAX_HOARD_BEFORE_USE;
+        let threshold = cap.harvest_threshold();
 
         let stockpile_and_carried = |t: Terrain| -> Option<u32> {
             match t {
@@ -830,26 +832,51 @@ impl GameState {
         }
     }
 
-    /// If `capitals[cap_idx].water >= WATER_GROWTH_THRESHOLD` **and** a valid
-    /// spawn tile exists near the capital, spend `WATER_GROWTH_COST` water and
-    /// spawn one new NPC assigned to this capital. Called immediately after any
-    /// water increase (NPC deposit, player sale) so growth is instant.
+    /// AI decision called immediately after a resource is added to a capital
+    /// (via NPC deposit or player sale). Does exactly one of the following:
     ///
-    /// If no valid spawn tile is available (the capital is completely surrounded
-    /// by walls, NPCs, other capitals, or the player), growth pauses and water
-    /// is NOT consumed — the next water deposit will try again.
+    /// 1. **Upgrade** — if population has reached `npc_target()` and all three
+    ///    stockpiles cover `upgrade_cost()`, deduct the cost and increment tier.
+    ///    Upgrading increases `resource_cap`, `npc_target`, and future upgrade
+    ///    costs. Requires `can_upgrade()` (not at max tier, city only).
+    /// 2. **Grow** — if population is below `npc_target()` and water is at the
+    ///    current `resource_cap()`, spawn one new NPC for `WATER_GROWTH_COST`
+    ///    water. A spawn tile is found via `find_growth_spawn`; if none is
+    ///    available, water is NOT consumed and we try again next deposit.
+    /// 3. **Nothing** — stockpiles accumulate, waiting for other deposits to
+    ///    make upgrade affordable.
     ///
-    /// `pub(super)` so `actions.rs::sell_resource` can trigger it when the player
-    /// sells water to a capital.
-    pub(super) fn try_grow_capital(&mut self, cap_idx: usize) {
+    /// Called from the NPC `Returning` branch and from `actions.rs::sell_resource`
+    /// for every resource type. `pub(super)` so `actions.rs` can reach it.
+    pub(super) fn try_grow_or_upgrade(&mut self, cap_idx: usize) {
         if cap_idx >= self.capitals.len() {
             return;
         }
-        if self.capitals[cap_idx].water < crate::config::WATER_GROWTH_THRESHOLD {
+
+        let pop = self.population_of(cap_idx);
+        let cap = &self.capitals[cap_idx];
+        let target = cap.npc_target();
+
+        // Step 1: Upgrade path — at or past population target AND affordable
+        if pop >= target && cap.can_upgrade() {
+            let cost = cap.upgrade_cost();
+            let cap = &mut self.capitals[cap_idx];
+            cap.water = cap.water.saturating_sub(cost);
+            cap.fuel = cap.fuel.saturating_sub(cost);
+            cap.scrap = cap.scrap.saturating_sub(cost);
+            cap.tier += 1;
             return;
         }
 
-        // Look for a spawn tile BEFORE spending water so a failed spawn doesn't
+        // Step 2: Growth path — water at cap AND below population target
+        if pop >= target {
+            return;
+        }
+        if self.capitals[cap_idx].water < self.capitals[cap_idx].resource_cap() {
+            return;
+        }
+
+        // Find a spawn tile BEFORE spending water so a failed spawn doesn't
         // waste the resource.
         let spawn = match self.find_growth_spawn(cap_idx) {
             Some(pos) => pos,
