@@ -16,7 +16,7 @@ For each `(col, row)` the renderer picks ONE of these (first match wins):
 2. **NPC** — faction `npc_glyph` if an NPC is there.
 3. **Capital center** — `cap.center_glyph()` for complete capitals, or empty background for in-progress city foundations.
 4. **Capital wall (border)** — for cities, uses `state.wall_glyph_at(col, row)` to compute the auto-connected box-drawing character. For camps, always `✗`.
-5. **Free-standing wall** — `tile.wall.is_some()` → `state.wall_glyph_at(col, row)` (same connection logic as city walls).
+5. **Free-standing wall** — `tile.wall.is_some()` → `state.wall_glyph_at(col, row)` (same connection logic as city walls). Background follows the tile's owner, NOT the wall's own faction — since walls don't claim territory, a wall on unclaimed wasteland renders with no background and the wall faction color as the glyph foreground.
 6. **Terrain** — `tile.terrain.glyph_varied(variant, col, row, anim_tick)` for animation (water ripple, wasteland dust, varied ruins).
 
 ### Foreground / background contrast

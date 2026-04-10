@@ -95,10 +95,20 @@ pub fn render(f: &mut Frame, state: &GameState) {
                 ));
             } else if let Some(wall_faction) = tile.wall {
                 let ch = state.wall_glyph_at(col as u16, row as u16);
-                spans.push(Span::styled(
-                    format!("{} ", ch),
-                    Style::default().fg(crate::config::TERMINAL_BG).bg(wall_faction.color()),
-                ));
+                // Follow the same pattern as player/NPCs: use the tile's owner color
+                // as background if claimed, otherwise no background with the wall's
+                // faction as foreground. Walls don't claim territory, so a wall on
+                // unclaimed wasteland shouldn't look like claimed territory.
+                let (fg, bg) = if let Some(bg) = tile_bg {
+                    (crate::config::TERMINAL_BG, Some(bg))
+                } else {
+                    (wall_faction.color(), None)
+                };
+                let mut style = Style::default().fg(fg);
+                if let Some(bg) = bg {
+                    style = style.bg(bg);
+                }
+                spans.push(Span::styled(format!("{} ", ch), style));
             } else {
                 let glyph = tile.terrain.glyph_varied(tile.glyph_variant, col, row, state.anim_tick);
                 let fg = match tile.terrain {
