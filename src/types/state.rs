@@ -83,6 +83,13 @@ pub struct GameState {
     /// incrementally on every NPC move so `is_blocked_for_npc` can do an O(1)
     /// lookup instead of iterating all NPCs.
     pub occupancy: Vec<Option<usize>>,
+    /// Precomputed distance fields: for each tile, the manhattan distance to
+    /// the nearest resource tile of that type. Computed once in `new()` via
+    /// multi-source BFS. Used by `pick_claim_target` to bias NPC territory
+    /// expansion toward their faction's primary resource cluster.
+    pub dist_to_water: Vec<u32>,
+    pub dist_to_rocky: Vec<u32>,
+    pub dist_to_ruins: Vec<u32>,
 }
 
 impl GameState {
@@ -187,6 +194,13 @@ impl GameState {
             occupancy[idx] = Some(i);
         }
 
+        // Precompute distance fields for each resource type. Used by claim
+        // target scoring so NPCs prefer tiles near their faction's primary
+        // resource cluster.
+        let dist_to_water = compute_distance_field(&map, Terrain::Water);
+        let dist_to_rocky = compute_distance_field(&map, Terrain::Rocky);
+        let dist_to_ruins = compute_distance_field(&map, Terrain::Ruins);
+
         GameState {
             map,
             capitals,
@@ -214,6 +228,9 @@ impl GameState {
             last_decay: std::time::Instant::now(),
             last_dehydration: std::time::Instant::now(),
             occupancy,
+            dist_to_water,
+            dist_to_rocky,
+            dist_to_ruins,
         }
     }
 
@@ -714,13 +731,34 @@ impl GameState {
         best.map(|(tx, ty, terrain, _)| (tx, ty, terrain))
     }
 
-    /// Pick the nearest unclaimed wasteland tile that the NPC's faction
-    /// could claim — adjacent to at least one tile already owned by this
-    /// faction, not walled, not inside any capital footprint, and not
-    /// already being targeted by another same-faction NPC.
+    /// The distance-field vector corresponding to a faction's primary
+    /// resource type. Water faction cares about water, Gas about rocky,
+    /// Scrap about ruins. Cult has no primary (returns `None`).
+    fn primary_distance_field(&self, faction: FactionId) -> Option<&Vec<u32>> {
+        match faction {
+            FactionId::Water => Some(&self.dist_to_water),
+            FactionId::Gas => Some(&self.dist_to_rocky),
+            FactionId::Scrap => Some(&self.dist_to_ruins),
+            FactionId::Cult => None,
+        }
+    }
+
+    /// Pick the next tile for this NPC's faction to claim. Each candidate
+    /// must be:
+    /// - Wasteland, not walled, not inside any capital footprint
+    /// - Not already owned by this faction
+    /// - Cardinally adjacent to at least one tile this faction already owns
+    /// - Not currently targeted by another same-faction NPC
+    /// - Not on this NPC's blacklist
+    ///
+    /// Candidates are scored as `distance_to_npc + dist_to_primary_resource
+    /// * PRIMARY_RESOURCE_WEIGHT` and the lowest-scoring tile wins. This
+    /// biases territory expansion toward the faction's main resource
+    /// cluster first, then naturally drifts to scattered resource nodes
+    /// once the area around the main cluster is saturated.
     ///
     /// Home capital must have at least `CLAIM_SCRAP_COST` scrap; otherwise
-    /// returns `None` (growth pauses until scrap is available).
+    /// returns `None` (claiming pauses until scrap is available).
     fn pick_claim_target(&self, npc_idx: usize) -> Option<(u16, u16)> {
         let faction = self.npcs[npc_idx].faction;
         let home_idx = self.npcs[npc_idx].home_capital_idx;
@@ -737,6 +775,12 @@ impl GameState {
         let w = self.map[0].len();
         let h = self.map.len();
         let dirs: [(i16, i16); 4] = [(0, -1), (1, 0), (0, 1), (-1, 0)];
+
+        // How strongly to bias claim scoring toward the primary resource.
+        // Higher = NPCs will walk further to stay near their main cluster.
+        const PRIMARY_RESOURCE_WEIGHT: i32 = 2;
+
+        let primary_field = self.primary_distance_field(faction);
 
         let mut best: Option<(u16, u16, i32)> = None;
         for y in 0..h {
@@ -773,10 +817,14 @@ impl GameState {
                 if !self.claim_tile_open_for(x as u16, y as u16, npc_idx) {
                     continue;
                 }
-                let dist =
+                let dist_to_npc =
                     (x as i32 - npc_x as i32).abs() + (y as i32 - npc_y as i32).abs();
-                if best.map_or(true, |(_, _, bd)| dist < bd) {
-                    best = Some((x as u16, y as u16, dist));
+                let primary_dist = primary_field
+                    .map(|f| f[y * w + x] as i32)
+                    .unwrap_or(0);
+                let score = dist_to_npc + primary_dist * PRIMARY_RESOURCE_WEIGHT;
+                if best.map_or(true, |(_, _, bs)| score < bs) {
+                    best = Some((x as u16, y as u16, score));
                 }
             }
         }
@@ -1355,6 +1403,49 @@ impl GameState {
 
 /// Check if (x, y) is inside any capital's 3x3 area (for use during initial spawn,
 /// before `GameState` exists).
+/// Multi-source BFS producing a distance field: for each tile, the manhattan
+/// distance (in terms of 4-connected grid steps) to the nearest tile of the
+/// given `terrain` type. Tiles of the target terrain are distance 0; all
+/// others radiate outward. Used once at map generation time — the field never
+/// needs to be recomputed because resource tiles don't move.
+fn compute_distance_field(map: &[Vec<Tile>], terrain: Terrain) -> Vec<u32> {
+    use std::collections::VecDeque;
+
+    let h = map.len();
+    let w = map[0].len();
+    let mut dist = vec![u32::MAX; w * h];
+    let mut queue: VecDeque<(usize, usize)> = VecDeque::new();
+
+    for y in 0..h {
+        for x in 0..w {
+            if map[y][x].terrain == terrain {
+                dist[y * w + x] = 0;
+                queue.push_back((x, y));
+            }
+        }
+    }
+
+    let dirs: [(i32, i32); 4] = [(0, -1), (1, 0), (0, 1), (-1, 0)];
+    while let Some((cx, cy)) = queue.pop_front() {
+        let cd = dist[cy * w + cx];
+        for (dx, dy) in dirs {
+            let nx = cx as i32 + dx;
+            let ny = cy as i32 + dy;
+            if nx < 0 || ny < 0 || nx >= w as i32 || ny >= h as i32 {
+                continue;
+            }
+            let (nx, ny) = (nx as usize, ny as usize);
+            let idx = ny * w + nx;
+            if dist[idx] == u32::MAX {
+                dist[idx] = cd + 1;
+                queue.push_back((nx, ny));
+            }
+        }
+    }
+
+    dist
+}
+
 fn in_capital_area(capitals: &[Capital], x: u16, y: u16) -> bool {
     capitals.iter().any(|c| {
         let dx = (x as i16 - c.x as i16).abs();
