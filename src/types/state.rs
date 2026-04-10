@@ -547,15 +547,21 @@ impl GameState {
         false
     }
 
-    /// Single-step movement toward a target. Uses A* pathfinding with a goal
-    /// predicate so the same function works whether the NPC is walking toward
-    /// a single resource tile or back to the 3×3 capital footprint. The path
-    /// is planned through static obstacles only; transient NPC collisions are
-    /// resolved at the move-attempt stage with a random-step fallback.
+    /// Single-step movement toward a target. Runs A* twice if necessary:
+    /// 1. **Crowd-aware** pass that treats other NPCs as blockers — finds
+    ///    paths that route *around* peers, so an NPC can approach a resource
+    ///    from a different cardinal side when their preferred approach is
+    ///    occupied.
+    /// 2. **Static-only** fallback that plans through peer NPCs — used when
+    ///    the NPC is temporarily boxed in by a crowd and the first pass
+    ///    returns None.
+    /// 3. **Random** fallback if both A* passes fail (or their first step is
+    ///    still blocked by a transient peer collision).
     fn step_npc_toward(&mut self, i: usize, target: AstarTarget) {
         use rand::Rng;
 
-        if let Some((sx, sy)) = self.astar_next_step(i, target) {
+        // Pass 1: A* that respects NPC blockers
+        if let Some((sx, sy)) = self.astar_next_step(i, target, true) {
             let nx = self.npcs[i].x as i16 + sx;
             let ny = self.npcs[i].y as i16 + sy;
             if !self.is_blocked_for_npc(nx, ny, i) {
@@ -565,9 +571,19 @@ impl GameState {
             }
         }
 
-        // Fallback: random cardinal step. Used when A* can't reach the target
-        // (temporary blockage by another NPC, disconnected region, etc.) — the
-        // NPC tries again on the next tick after other things may have moved.
+        // Pass 2: A* through static terrain only (allows planning through NPCs
+        // when the crowd-aware pass fails, e.g. deep crowding around a capital)
+        if let Some((sx, sy)) = self.astar_next_step(i, target, false) {
+            let nx = self.npcs[i].x as i16 + sx;
+            let ny = self.npcs[i].y as i16 + sy;
+            if !self.is_blocked_for_npc(nx, ny, i) {
+                self.npcs[i].x = nx as u16;
+                self.npcs[i].y = ny as u16;
+                return;
+            }
+        }
+
+        // Last resort: random cardinal step
         let npc_x = self.npcs[i].x;
         let npc_y = self.npcs[i].y;
         let dirs: [(i16, i16); 4] = [(0, -1), (1, 0), (0, 1), (-1, 0)];
@@ -586,10 +602,20 @@ impl GameState {
     }
 
     /// A* pathfinding from the NPC's position to the first tile satisfying the
-    /// goal predicate (see `AstarTarget`). Plans through static obstacles only
-    /// (`is_static_blocked`) so crowded NPCs don't deadlock each other. Uses
-    /// Manhattan distance to the target anchor as the heuristic.
-    fn astar_next_step(&self, npc_idx: usize, target: AstarTarget) -> Option<(i16, i16)> {
+    /// goal predicate (see `AstarTarget`). Uses Manhattan distance to the
+    /// target anchor as the heuristic. `include_npcs` controls whether peer
+    /// NPCs and the player are treated as blockers during planning:
+    /// - `true`: uses `is_blocked_for_npc` — A* routes around other NPCs, so
+    ///   an NPC can automatically try different cardinal approaches to a
+    ///   resource when peers are in the way.
+    /// - `false`: uses `is_static_blocked` — A* plans straight through NPCs,
+    ///   useful as a fallback when the crowd-aware pass returns None.
+    fn astar_next_step(
+        &self,
+        npc_idx: usize,
+        target: AstarTarget,
+        include_npcs: bool,
+    ) -> Option<(i16, i16)> {
         use std::cmp::Reverse;
         use std::collections::BinaryHeap;
 
@@ -648,7 +674,12 @@ impl GameState {
                 if nx < 0 || ny < 0 || nx >= w as i16 || ny >= h as i16 {
                     continue;
                 }
-                if self.is_static_blocked(nx, ny) {
+                let blocked = if include_npcs {
+                    self.is_blocked_for_npc(nx, ny, npc_idx)
+                } else {
+                    self.is_static_blocked(nx, ny)
+                };
+                if blocked {
                     continue;
                 }
                 let (nux, nuy) = (nx as u16, ny as u16);
