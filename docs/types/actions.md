@@ -13,7 +13,7 @@ Each action follows a consistent three-method lifecycle: `can_X()` (precondition
 - `check_extraction()` — after `EXTRACT_TIME_MS`, adds 1 of the right resource to player inventory and clears the state.
 
 ### Claim
-- `can_claim()` — player stands on wasteland they don't own, has scrap, no other action in progress.
+- `can_claim()` — player stands on wasteland they don't own, has scrap, no other action in progress, **and** at least one cardinal neighbor is already owned by the player's faction. Forces territory to grow as a connected shape from an existing foothold.
 - `start_claim()` — sets `Player.claiming`.
 - `claim_time_ms()` — base time, multiplied by `CLAIM_CONTESTED_MULTIPLIER` if the tile is owned by another faction.
 - `check_claim()` — deducts scrap, sets `tile.owner = Some(player.faction)`.

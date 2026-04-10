@@ -71,11 +71,36 @@ impl GameState {
     /// Can the player claim the tile they're standing on?
     pub fn can_claim(&self) -> bool {
         let tile = &self.map[self.player.y as usize][self.player.x as usize];
-        tile.terrain == Terrain::Wasteland
-            && tile.owner != Some(self.player.faction)
-            && self.player.scrap >= crate::config::CLAIM_SCRAP_COST
-            && self.player.extracting.is_none()
-            && self.player.claiming.is_none()
+        if tile.terrain != Terrain::Wasteland {
+            return false;
+        }
+        if tile.owner == Some(self.player.faction) {
+            return false;
+        }
+        if self.player.scrap < crate::config::CLAIM_SCRAP_COST {
+            return false;
+        }
+        if self.player.extracting.is_some() || self.player.claiming.is_some() {
+            return false;
+        }
+        // Must be cardinally adjacent to a tile the player's faction already owns.
+        // This forces territory to grow as a connected shape from an existing foothold.
+        let px = self.player.x as i16;
+        let py = self.player.y as i16;
+        let dirs: [(i16, i16); 4] = [(0, -1), (1, 0), (0, 1), (-1, 0)];
+        let w = self.map[0].len() as i16;
+        let h = self.map.len() as i16;
+        for (dx, dy) in dirs {
+            let nx = px + dx;
+            let ny = py + dy;
+            if nx < 0 || ny < 0 || nx >= w || ny >= h {
+                continue;
+            }
+            if self.map[ny as usize][nx as usize].owner == Some(self.player.faction) {
+                return true;
+            }
+        }
+        false
     }
 
     /// Press F: start claiming the tile the player is standing on.
