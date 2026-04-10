@@ -20,11 +20,17 @@ pub fn render(f: &mut Frame, state: &GameState) {
     let px = state.player.x;
     let py = state.player.y;
 
+    // One row at the top for the per-faction territory bars.
+    const TERRITORY_BAR_ROWS: u16 = 1;
+
     // Reserve 2 lines for HUD normally, 3 when adjacent to a capital
     let adjacent_cap = state.adjacent_capital();
     // Player line + controls line, plus capital info + trade line (2 extra) when adjacent
     let hud_lines = if adjacent_cap.is_some() { 4 } else { 2 };
-    let map_height = (area.height as usize).saturating_sub(hud_lines).min(map.len());
+    let map_height = (area.height as usize)
+        .saturating_sub(hud_lines)
+        .saturating_sub(TERRITORY_BAR_ROWS as usize)
+        .min(map.len());
     // Each tile is 2 chars wide to compensate for terminal cells being ~2x taller than wide
     let map_width = (area.width as usize) / 2;
 
@@ -129,8 +135,37 @@ pub fn render(f: &mut Frame, state: &GameState) {
     }
 
     let map_widget = Paragraph::new(lines);
-    let map_area = Rect::new(0, 0, area.width, map_height as u16);
+    let map_area = Rect::new(0, TERRITORY_BAR_ROWS, area.width, map_height as u16);
     f.render_widget(map_widget, map_area);
+
+    // ---------- Territory bar (top row) ----------
+    // Shows each faction's claimed territory as a percentage of total wasteland.
+    // 51% wins (future: win screen on reaching the threshold).
+    let pcts = state.territory_percents();
+    const TERRITORY_BAR_WIDTH: usize = 14;
+    let faction_labels: [(crate::types::FactionId, usize); 4] = [
+        (crate::types::FactionId::Water, 0),
+        (crate::types::FactionId::Gas, 1),
+        (crate::types::FactionId::Scrap, 2),
+        (crate::types::FactionId::Cult, 3),
+    ];
+    let mut territory_spans: Vec<Span> = Vec::new();
+    for (i, (faction, pct_idx)) in faction_labels.iter().enumerate() {
+        if i > 0 {
+            territory_spans.push(Span::raw("   "));
+        }
+        territory_spans.push(Span::styled(
+            format!("{} ", faction.glyph()),
+            Style::default().fg(faction.color()),
+        ));
+        territory_spans.push(Span::styled(
+            render_bar(pcts[*pct_idx], TERRITORY_BAR_WIDTH),
+            Style::default().fg(faction.color()),
+        ));
+    }
+    let territory_line = Line::from(territory_spans);
+    let territory_para = Paragraph::new(territory_line);
+    f.render_widget(territory_para, Rect::new(0, 0, area.width, TERRITORY_BAR_ROWS));
 
     // HUD Line 1: Player faction + resources + extraction status
     let p = &state.player;
@@ -350,7 +385,7 @@ pub fn render(f: &mut Frame, state: &GameState) {
     ]);
     hud_content.push(hud_controls);
 
-    let hud_y = map_height as u16;
+    let hud_y = TERRITORY_BAR_ROWS + map_height as u16;
     let hud = Paragraph::new(hud_content);
     f.render_widget(hud, Rect::new(0, hud_y, area.width, hud_lines as u16));
 }

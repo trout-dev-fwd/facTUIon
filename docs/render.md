@@ -7,7 +7,8 @@ All ratatui drawing. Exposes a single `render(f, &state)` function called once p
 - `render(f: &mut Frame, state: &GameState)` — draws the entire frame.
 
 ## Layout
-- **Map area** — fills the top of the terminal. Height = `area.height - hud_lines`. Width is `area.width / 2` tiles wide because each tile is rendered as 2 characters (e.g. `"@ "`) to compensate for terminal cells being ~2x taller than wide. Nothing is retained between frames — the full map is rebuilt every draw.
+- **Territory bar** — 1 line at the very top. Shows each faction's claimed-territory percentage as a `render_bar` in faction color. 51% wins (check not yet wired).
+- **Map area** — below the territory bar. Height = `area.height - hud_lines - 1`. Width is `area.width / 2` tiles wide because each tile is rendered as 2 characters (e.g. `"@ "`) to compensate for terminal cells being ~2x taller than wide. Nothing is retained between frames — the full map is rebuilt every draw.
 - **HUD** — pinned to the bottom. 2 lines normally, 4 when adjacent to a capital (player line + capital info + trade instructions + controls).
 
 ## Tile render priority (per grid cell)

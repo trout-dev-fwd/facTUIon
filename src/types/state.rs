@@ -360,6 +360,42 @@ impl GameState {
         count
     }
 
+    /// Per-faction territory percentages. Denominator is the total number of
+    /// wasteland tiles on the map; numerator per faction is the count of
+    /// wasteland tiles whose `owner` is that faction. Returned as a [f32; 4]
+    /// indexed by faction order: [Water, Gas, Scrap, Cult]. Values are in 0.0-1.0.
+    pub fn territory_percents(&self) -> [f32; 4] {
+        let mut counts = [0u32; 4];
+        let mut total: u32 = 0;
+        for row in &self.map {
+            for tile in row {
+                if tile.terrain != Terrain::Wasteland {
+                    continue;
+                }
+                total += 1;
+                if let Some(owner) = tile.owner {
+                    let idx = match owner {
+                        FactionId::Water => 0,
+                        FactionId::Gas => 1,
+                        FactionId::Scrap => 2,
+                        FactionId::Cult => 3,
+                    };
+                    counts[idx] += 1;
+                }
+            }
+        }
+        if total == 0 {
+            return [0.0; 4];
+        }
+        let total_f = total as f32;
+        [
+            counts[0] as f32 / total_f,
+            counts[1] as f32 / total_f,
+            counts[2] as f32 / total_f,
+            counts[3] as f32 / total_f,
+        ]
+    }
+
     /// Returns a capital the player is cardinally adjacent to (next to any footprint tile).
     pub fn adjacent_capital(&self) -> Option<&Capital> {
         self.adjacent_capital_idx().map(|i| &self.capitals[i])

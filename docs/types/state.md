@@ -32,6 +32,7 @@ Read-only methods the renderer and actions use to understand world state.
 - `wall_glyph_at(x, y)` — computes the correct box-drawing char based on neighbor connectivity (16-case lookup: corners, straights, Ts, cross). Used for both city walls and free walls so they visually merge.
 - `is_capital_area(x, y)` — any footprint tile of any capital.
 - `population_of(cap_idx)` — NPCs + player assigned to this capital via `home_capital_idx`.
+- `territory_percents()` — returns `[f32; 4]` indexed as `[Water, Gas, Scrap, Cult]`, each value in `0.0..=1.0`. Numerator is the count of wasteland tiles whose `tile.owner` is that faction; denominator is the total wasteland tile count. Used by the top-of-screen HUD territory bars. 51% wins (future win-condition check).
 - `adjacent_capital()` / `adjacent_capital_idx()` — capital the player is cardinally adjacent to. Used by HUD and all trade/foundation actions.
 - `npc_at(x, y)` — NPC at exactly this tile.
 
