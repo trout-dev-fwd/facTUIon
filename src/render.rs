@@ -7,11 +7,16 @@ use ratatui::widgets::Paragraph;
 use crate::types::GameState;
 
 fn render_bar(value: f32, width: usize) -> String {
-    let pct = (value.clamp(0.0, 1.0) * 100.0) as usize;
+    let pct = value.clamp(0.0, 1.0) * 100.0;
     let inner = width - 2;
     let filled = ((value * inner as f32) as usize).min(inner.saturating_sub(1));
     let empty = inner.saturating_sub(filled).saturating_sub(1);
-    format!("╞{}▰{}╡ {}%", "═".repeat(filled), "═".repeat(empty), pct)
+    format!(
+        "╞{}▰{}╡ {:.1}%",
+        "═".repeat(filled),
+        "═".repeat(empty),
+        pct
+    )
 }
 
 pub fn render(f: &mut Frame, state: &GameState) {
@@ -142,7 +147,7 @@ pub fn render(f: &mut Frame, state: &GameState) {
     // Shows each faction's claimed territory as a percentage of total wasteland.
     // 51% wins (future: win screen on reaching the threshold).
     let pcts = state.territory_percents();
-    const TERRITORY_BAR_WIDTH: usize = 14;
+    const TERRITORY_BAR_WIDTH: usize = 18;
     let faction_labels: [(crate::types::FactionId, usize); 4] = [
         (crate::types::FactionId::Water, 0),
         (crate::types::FactionId::Gas, 1),
