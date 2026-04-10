@@ -403,8 +403,7 @@ impl GameState {
                         let ny = cy + dy;
                         if nx >= 0 && nx < w && ny >= 0 && ny < h {
                             if !self.is_blocked_for_npc(nx, ny, i) {
-                                self.npcs[i].x = nx as u16;
-                                self.npcs[i].y = ny as u16;
+                                self.move_npc_to(i, nx as u16, ny as u16);
                                 break;
                             }
                         }
@@ -522,8 +521,7 @@ impl GameState {
                         let ny = cy + dy;
                         if nx >= 0 && nx < w && ny >= 0 && ny < h {
                             if !self.is_blocked_for_npc(nx, ny, i) {
-                                self.npcs[i].x = nx as u16;
-                                self.npcs[i].y = ny as u16;
+                                self.move_npc_to(i, nx as u16, ny as u16);
                                 break;
                             }
                         }

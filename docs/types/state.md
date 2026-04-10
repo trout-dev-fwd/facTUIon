@@ -49,7 +49,12 @@ Called from `main.rs` game loop each frame. Internally time-gated.
 
 ### Blocking / movement
 - `is_blocked(x, y)` — the canonical "can you walk there?" check. Blocks on: edges, non-wasteland terrain, walls (`tile.wall`), capital footprints, and NPCs. Used for player movement and post-action player nudging.
-- `is_blocked_for_npc(x, y, self_idx)` — like `is_blocked` but excludes the NPC at `self_idx` (so NPCs don't block themselves) and includes the player position (so NPCs can't overlap the player). `pub(super)` so `actions.rs` can call it when evicting NPCs after city/camp founding.
+- `is_blocked_for_npc(x, y, self_idx)` — like `is_blocked` but excludes the NPC at `self_idx` (so NPCs don't block themselves) and includes the player position (so NPCs can't overlap the player). Uses the **occupancy grid** for an O(1) NPC lookup instead of scanning every NPC. `pub(super)` so `actions.rs` can call it when evicting NPCs after city/camp founding.
+- `move_npc_to(i, nx, ny)` (`pub(super)`) — canonical NPC position update. Clears the NPC's old occupancy slot, writes the new coordinates, and marks the new occupancy slot in one step. **Every successful NPC position change must go through this helper** so the occupancy grid doesn't drift out of sync with actual NPC positions.
+- `mark_npc_occupancy(i)` (`pub(super)`) — set the grid cell for a freshly-spawned NPC. Called after pushing to `self.npcs` in `try_grow_or_upgrade`.
+- `rebuild_occupancy()` (`pub(super)`) — clears the grid and repopulates it from the current NPC list. Used after bulk changes that shift indices (currently only `update_dehydration` after removals).
+- `occupancy_at(x, y)` — O(1) lookup returning the NPC index at a tile, or `None`.
+- `occupancy: Vec<Option<usize>>` on `GameState` — flat `width * height` grid, rebuilt once in `new()` and then maintained incrementally via the above helpers.
 - `move_player(dx, dy)` — weight-scaled cooldown (`MOVE_COOLDOWN[carry_weight]`) with the home capital's fuel-tier bonus applied via `Capital::apply_fuel_bonus`, then collision check, then updates position. **Also cancels every in-progress `Player.*State` field** — moving aborts any action.
 
 ### NPC harvest helpers (private, used only by `update_npcs`)
@@ -59,7 +64,7 @@ Called from `main.rs` game loop each frame. Internally time-gated.
   1. **Crowd-aware A*** (`astar_next_step(i, target, true)`) — routes around other NPCs, so an NPC can automatically try different cardinal approach tiles to a resource when their preferred side is occupied by a peer.
   2. **Static-only A*** (`astar_next_step(i, target, false)`) — plans through NPCs as if they weren't there. Used as a fallback when crowd-aware fails (deep crowding near a capital).
   3. **Random cardinal step** — last resort. Returns `false` so the `TargetingResource` caller will set `last_failed_target` and drop back to `Wandering` for a re-pick.
-- `astar_next_step(npc_idx, target, include_npcs)` — A* pathfinding with a goal predicate and Manhattan heuristic. `include_npcs = true` uses `is_blocked_for_npc` so peers count as obstacles; `false` uses `is_static_blocked` (terrain/walls/capitals only).
+- `astar_next_step(npc_idx, target, include_npcs)` — A* pathfinding with a goal predicate and Manhattan heuristic. `include_npcs = true` uses `is_blocked_for_npc` so peers count as obstacles; `false` uses `is_static_blocked` (terrain/walls/capitals only). Uses a **thread-local `AstarScratch`** (flat `g_score`, `parent`, and `BinaryHeap` open set) that's reused across every call — zero allocation on the hot path.
 - `AstarTarget` (module-private enum) — goal description:
   - `AdjacentTo(tx, ty)` — reach any tile cardinally adjacent to the single tile `(tx, ty)`. Used for resource targets.
   - `AdjacentToBox(cx, cy)` — reach any tile cardinally adjacent to the 3×3 capital footprint centered at `(cx, cy)`. **Critical**: home-return pathfinding must use this, not `AdjacentTo(cx, cy)`, because the center's 4 cardinal neighbors are all wall tiles — targeting the center would always fail and force NPCs into random-walk fallback after every deposit.

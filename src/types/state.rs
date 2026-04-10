@@ -1,3 +1,7 @@
+use std::cell::RefCell;
+use std::cmp::Reverse;
+use std::collections::BinaryHeap;
+
 use rand::rngs::SmallRng;
 use rand::Rng;
 use rand::SeedableRng;
@@ -7,6 +11,41 @@ use super::faction::FactionId;
 use super::npc::{Npc, NpcTask};
 use super::player::Player;
 use super::terrain::{Terrain, Tile};
+
+/// Scratch buffers reused across all A* calls on a single thread. Avoids
+/// allocating two `Vec<Vec<_>>` grids and a fresh `BinaryHeap` on every
+/// pathfinding call, which was the single biggest source of lag at high
+/// NPC counts.
+struct AstarScratch {
+    g_score: Vec<u32>,
+    parent: Vec<(u16, u16)>,
+    open: BinaryHeap<(Reverse<u32>, u16, u16)>,
+}
+
+impl AstarScratch {
+    fn new() -> Self {
+        Self {
+            g_score: Vec::new(),
+            parent: Vec::new(),
+            open: BinaryHeap::new(),
+        }
+    }
+
+    fn prepare(&mut self, size: usize) {
+        if self.g_score.len() < size {
+            self.g_score.resize(size, u32::MAX);
+            self.parent.resize(size, (u16::MAX, u16::MAX));
+        }
+        // Clear in-place rather than reallocating
+        self.g_score.fill(u32::MAX);
+        self.parent.fill((u16::MAX, u16::MAX));
+        self.open.clear();
+    }
+}
+
+thread_local! {
+    static ASTAR_SCRATCH: RefCell<AstarScratch> = RefCell::new(AstarScratch::new());
+}
 
 /// Goal description for `astar_next_step`. Parameterizes the goal predicate
 /// and the heuristic so the same A* implementation works for both walking to
@@ -35,6 +74,11 @@ pub struct GameState {
     pub last_anim: std::time::Instant,
     pub last_decay: std::time::Instant,
     pub last_dehydration: std::time::Instant,
+    /// Flat `width * height` grid of NPC index per tile. `Some(i)` = the NPC
+    /// at `npcs[i]` is standing on this tile; `None` = no NPC here. Updated
+    /// incrementally on every NPC move so `is_blocked_for_npc` can do an O(1)
+    /// lookup instead of iterating all NPCs.
+    pub occupancy: Vec<Option<usize>>,
 }
 
 impl GameState {
@@ -130,6 +174,15 @@ impl GameState {
             }
         }
 
+        // Build the occupancy grid from the spawned NPCs
+        let grid_w = width as usize;
+        let grid_h = height as usize;
+        let mut occupancy: Vec<Option<usize>> = vec![None; grid_w * grid_h];
+        for (i, npc) in npcs.iter().enumerate() {
+            let idx = (npc.y as usize) * grid_w + (npc.x as usize);
+            occupancy[idx] = Some(i);
+        }
+
         GameState {
             map,
             capitals,
@@ -156,6 +209,48 @@ impl GameState {
             last_anim: std::time::Instant::now(),
             last_decay: std::time::Instant::now(),
             last_dehydration: std::time::Instant::now(),
+            occupancy,
+        }
+    }
+
+    /// O(1) lookup for "is this tile currently occupied by an NPC?".
+    #[inline]
+    fn occupancy_at(&self, x: u16, y: u16) -> Option<usize> {
+        let w = self.map[0].len();
+        self.occupancy[(y as usize) * w + (x as usize)]
+    }
+
+    /// Move NPC `i` to `(nx, ny)`, updating the occupancy grid in the same step.
+    /// All successful NPC position changes should go through this helper so the
+    /// grid never drifts out of sync with the actual NPC positions.
+    /// `pub(super)` so `actions.rs` can use it when evicting NPCs during
+    /// city/camp founding.
+    pub(super) fn move_npc_to(&mut self, i: usize, nx: u16, ny: u16) {
+        let w = self.map[0].len();
+        let old_idx = (self.npcs[i].y as usize) * w + (self.npcs[i].x as usize);
+        self.occupancy[old_idx] = None;
+        self.npcs[i].x = nx;
+        self.npcs[i].y = ny;
+        let new_idx = (ny as usize) * w + (nx as usize);
+        self.occupancy[new_idx] = Some(i);
+    }
+
+    /// Mark a freshly-spawned NPC's tile as occupied. Call after pushing to `self.npcs`.
+    pub(super) fn mark_npc_occupancy(&mut self, i: usize) {
+        let w = self.map[0].len();
+        let idx = (self.npcs[i].y as usize) * w + (self.npcs[i].x as usize);
+        self.occupancy[idx] = Some(i);
+    }
+
+    /// Rebuild the entire occupancy grid from the current NPC list. Used after
+    /// bulk changes where indices may have shifted (e.g. removal via
+    /// `update_dehydration`).
+    pub(super) fn rebuild_occupancy(&mut self) {
+        self.occupancy.fill(None);
+        let w = self.map[0].len();
+        for i in 0..self.npcs.len() {
+            let idx = (self.npcs[i].y as usize) * w + (self.npcs[i].x as usize);
+            self.occupancy[idx] = Some(i);
         }
     }
 
@@ -288,7 +383,9 @@ impl GameState {
     }
 
     pub fn npc_at(&self, x: u16, y: u16) -> Option<&Npc> {
-        self.npcs.iter().find(|n| n.x == x && n.y == y)
+        // O(1) via occupancy grid
+        let i = self.occupancy_at(x, y)?;
+        self.npcs.get(i)
     }
 
     // ---------- Per-frame updates ----------
@@ -385,8 +482,7 @@ impl GameState {
                         let nx = self.npcs[i].x as i16 + d.0;
                         let ny = self.npcs[i].y as i16 + d.1;
                         if !self.is_blocked_for_npc(nx, ny, i) {
-                            self.npcs[i].x = nx as u16;
-                            self.npcs[i].y = ny as u16;
+                            self.move_npc_to(i, nx as u16, ny as u16);
                         }
                     }
                     self.npcs[i].last_move = now;
@@ -605,8 +701,7 @@ impl GameState {
             let nx = self.npcs[i].x as i16 + sx;
             let ny = self.npcs[i].y as i16 + sy;
             if !self.is_blocked_for_npc(nx, ny, i) {
-                self.npcs[i].x = nx as u16;
-                self.npcs[i].y = ny as u16;
+                self.move_npc_to(i, nx as u16, ny as u16);
                 return true;
             }
         }
@@ -617,8 +712,7 @@ impl GameState {
             let nx = self.npcs[i].x as i16 + sx;
             let ny = self.npcs[i].y as i16 + sy;
             if !self.is_blocked_for_npc(nx, ny, i) {
-                self.npcs[i].x = nx as u16;
-                self.npcs[i].y = ny as u16;
+                self.move_npc_to(i, nx as u16, ny as u16);
                 return true;
             }
         }
@@ -634,8 +728,7 @@ impl GameState {
             let nx = npc_x as i16 + sx;
             let ny = npc_y as i16 + sy;
             if !self.is_blocked_for_npc(nx, ny, i) {
-                self.npcs[i].x = nx as u16;
-                self.npcs[i].y = ny as u16;
+                self.move_npc_to(i, nx as u16, ny as u16);
                 return false;
             }
         }
@@ -658,11 +751,9 @@ impl GameState {
         target: AstarTarget,
         include_npcs: bool,
     ) -> Option<(i16, i16)> {
-        use std::cmp::Reverse;
-        use std::collections::BinaryHeap;
-
         let w = self.map[0].len();
         let h = self.map.len();
+        let size = w * h;
         let start = (self.npcs[npc_idx].x, self.npcs[npc_idx].y);
 
         // Goal anchor for the heuristic. For AdjacentTo this is the target tile
@@ -692,68 +783,77 @@ impl GameState {
             (dx + dy) as u32
         };
 
-        let mut g_score = vec![vec![u32::MAX; w]; h];
-        let mut parent: Vec<Vec<(u16, u16)>> = vec![vec![(u16::MAX, u16::MAX); w]; h];
-        // Min-heap on f_score = g + h
-        let mut open: BinaryHeap<(Reverse<u32>, u16, u16)> = BinaryHeap::new();
+        let flat_idx = |x: u16, y: u16| -> usize { (y as usize) * w + (x as usize) };
 
-        g_score[start.1 as usize][start.0 as usize] = 0;
-        open.push((Reverse(heuristic(start.0, start.1)), start.0, start.1));
+        // Use the thread-local scratch buffers instead of allocating fresh vectors
+        // on every call. `prepare` clears the buffers in-place.
+        ASTAR_SCRATCH.with(|scratch| {
+            let mut s = scratch.borrow_mut();
+            s.prepare(size);
 
-        let dirs: [(i16, i16); 4] = [(0, -1), (1, 0), (0, 1), (-1, 0)];
-        let mut goal_tile: Option<(u16, u16)> = None;
+            s.g_score[flat_idx(start.0, start.1)] = 0;
+            s.open
+                .push((Reverse(heuristic(start.0, start.1)), start.0, start.1));
 
-        while let Some((_, cx, cy)) = open.pop() {
-            if is_goal(cx, cy) {
-                goal_tile = Some((cx, cy));
-                break;
-            }
+            let dirs: [(i16, i16); 4] = [(0, -1), (1, 0), (0, 1), (-1, 0)];
+            let mut goal_tile: Option<(u16, u16)> = None;
 
-            let cg = g_score[cy as usize][cx as usize];
-            for (dx, dy) in dirs {
-                let nx = cx as i16 + dx;
-                let ny = cy as i16 + dy;
-                if nx < 0 || ny < 0 || nx >= w as i16 || ny >= h as i16 {
-                    continue;
+            while let Some((_, cx, cy)) = s.open.pop() {
+                if is_goal(cx, cy) {
+                    goal_tile = Some((cx, cy));
+                    break;
                 }
-                let blocked = if include_npcs {
-                    self.is_blocked_for_npc(nx, ny, npc_idx)
-                } else {
-                    self.is_static_blocked(nx, ny)
-                };
-                if blocked {
-                    continue;
-                }
-                let (nux, nuy) = (nx as u16, ny as u16);
-                let tentative_g = cg + 1;
-                if tentative_g < g_score[nuy as usize][nux as usize] {
-                    g_score[nuy as usize][nux as usize] = tentative_g;
-                    parent[nuy as usize][nux as usize] = (cx, cy);
-                    let f = tentative_g + heuristic(nux, nuy);
-                    open.push((Reverse(f), nux, nuy));
-                }
-            }
-        }
 
-        let goal_tile = goal_tile?;
-        if goal_tile == start {
-            return None; // caller should have transitioned before this point
-        }
+                let cg = s.g_score[flat_idx(cx, cy)];
+                for (dx, dy) in dirs {
+                    let nx = cx as i16 + dx;
+                    let ny = cy as i16 + dy;
+                    if nx < 0 || ny < 0 || nx >= w as i16 || ny >= h as i16 {
+                        continue;
+                    }
+                    let blocked = if include_npcs {
+                        self.is_blocked_for_npc(nx, ny, npc_idx)
+                    } else {
+                        self.is_static_blocked(nx, ny)
+                    };
+                    if blocked {
+                        continue;
+                    }
+                    let (nux, nuy) = (nx as u16, ny as u16);
+                    let tentative_g = cg + 1;
+                    let nidx = flat_idx(nux, nuy);
+                    if tentative_g < s.g_score[nidx] {
+                        s.g_score[nidx] = tentative_g;
+                        s.parent[nidx] = (cx, cy);
+                        let f = tentative_g + heuristic(nux, nuy);
+                        s.open.push((Reverse(f), nux, nuy));
+                    }
+                }
+            }
 
-        // Walk back via parent pointers to the first step after start
-        let mut current = goal_tile;
-        loop {
-            let p = parent[current.1 as usize][current.0 as usize];
-            if p.0 == u16::MAX {
-                return None; // broken chain
+            let goal_tile = match goal_tile {
+                Some(g) => g,
+                None => return None,
+            };
+            if goal_tile == start {
+                return None; // caller should have transitioned before this point
             }
-            if p == start {
-                let dx = current.0 as i16 - start.0 as i16;
-                let dy = current.1 as i16 - start.1 as i16;
-                return Some((dx, dy));
+
+            // Walk back via parent pointers to the first step after start
+            let mut current = goal_tile;
+            loop {
+                let p = s.parent[flat_idx(current.0, current.1)];
+                if p.0 == u16::MAX {
+                    return None; // broken chain
+                }
+                if p == start {
+                    let dx = current.0 as i16 - start.0 as i16;
+                    let dy = current.1 as i16 - start.1 as i16;
+                    return Some((dx, dy));
+                }
+                current = p;
             }
-            current = p;
-        }
+        })
     }
 
     /// True if the NPC is cardinally adjacent to any tile of its home capital's footprint.
@@ -825,10 +925,17 @@ impl GameState {
             .map(|(i, _)| i)
             .collect();
 
+        let mut removed_any = false;
         for cap_idx in dehydrated {
             if let Some(idx) = self.npcs.iter().rposition(|n| n.home_capital_idx == cap_idx) {
                 self.npcs.remove(idx);
+                removed_any = true;
             }
+        }
+        // Removal shifts subsequent indices, so the occupancy grid needs a
+        // full rebuild to stay in sync.
+        if removed_any {
+            self.rebuild_occupancy();
         }
     }
 
@@ -900,6 +1007,8 @@ impl GameState {
             carrying_scrap: 0,
             last_failed_target: None,
         });
+        let new_idx = self.npcs.len() - 1;
+        self.mark_npc_occupancy(new_idx);
     }
 
     /// Find an empty tile near the given capital where a new NPC can be placed.
@@ -968,7 +1077,7 @@ impl GameState {
         if self.is_capital_area(x as u16, y as u16) {
             return true;
         }
-        if self.npc_at(x as u16, y as u16).is_some() {
+        if self.occupancy_at(x as u16, y as u16).is_some() {
             return true;
         }
         false
@@ -997,7 +1106,8 @@ impl GameState {
     }
 
     /// Like is_blocked, but also considers the player position and excludes the NPC itself.
-    /// Visible to `actions.rs` via `pub(super)`.
+    /// Uses the occupancy grid for O(1) NPC collision checks instead of iterating
+    /// all NPCs. Visible to `actions.rs` via `pub(super)`.
     pub(super) fn is_blocked_for_npc(&self, x: i16, y: i16, self_idx: usize) -> bool {
         let w = self.map[0].len() as i16;
         let h = self.map.len() as i16;
@@ -1017,11 +1127,9 @@ impl GameState {
         if self.player.x == x as u16 && self.player.y == y as u16 {
             return true;
         }
-        for (i, npc) in self.npcs.iter().enumerate() {
-            if i == self_idx {
-                continue;
-            }
-            if npc.x == x as u16 && npc.y == y as u16 {
+        // O(1) NPC lookup via the pre-built occupancy grid
+        if let Some(occ) = self.occupancy_at(x as u16, y as u16) {
+            if occ != self_idx {
                 return true;
             }
         }
