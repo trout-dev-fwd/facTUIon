@@ -759,10 +759,14 @@ impl GameState {
         }
     }
 
-    /// If `capitals[cap_idx].water >= WATER_GROWTH_THRESHOLD`, spend
-    /// `WATER_GROWTH_COST` water and spawn one new NPC assigned to this capital.
-    /// Called immediately after any water increase (NPC deposit, player sale, etc.)
-    /// so growth is instant rather than time-gated.
+    /// If `capitals[cap_idx].water >= WATER_GROWTH_THRESHOLD` **and** a valid
+    /// spawn tile exists near the capital, spend `WATER_GROWTH_COST` water and
+    /// spawn one new NPC assigned to this capital. Called immediately after any
+    /// water increase (NPC deposit, player sale) so growth is instant.
+    ///
+    /// If no valid spawn tile is available (the capital is completely surrounded
+    /// by walls, NPCs, other capitals, or the player), growth pauses and water
+    /// is NOT consumed — the next water deposit will try again.
     ///
     /// `pub(super)` so `actions.rs::sell_resource` can trigger it when the player
     /// sells water to a capital.
@@ -773,24 +777,22 @@ impl GameState {
         if self.capitals[cap_idx].water < crate::config::WATER_GROWTH_THRESHOLD {
             return;
         }
+
+        // Look for a spawn tile BEFORE spending water so a failed spawn doesn't
+        // waste the resource.
+        let spawn = match self.find_growth_spawn(cap_idx) {
+            Some(pos) => pos,
+            None => return,
+        };
+
         self.capitals[cap_idx].water = self.capitals[cap_idx]
             .water
             .saturating_sub(crate::config::WATER_GROWTH_COST);
 
-        let cx = self.capitals[cap_idx].x;
-        let cy = self.capitals[cap_idx].y;
         let faction = self.capitals[cap_idx].faction;
-        let (w, h) = (self.map[0].len() as u16, self.map.len() as u16);
-        let player_x = self.player.x;
-        let player_y = self.player.y;
-
-        let (nx, ny) = find_open_adjacent_avoiding(
-            &self.map, &self.capitals, &self.npcs, player_x, player_y, cx, cy, w, h,
-        );
-
         self.npcs.push(Npc {
-            x: nx,
-            y: ny,
+            x: spawn.0,
+            y: spawn.1,
             faction,
             home_capital_idx: cap_idx,
             last_move: std::time::Instant::now(),
@@ -799,6 +801,54 @@ impl GameState {
             carrying_fuel: 0,
             carrying_scrap: 0,
         });
+    }
+
+    /// Find an empty tile near the given capital where a new NPC can be placed.
+    /// Properly handles camp footprints (`is_inside`), free-standing walls
+    /// (`tile.wall`), the player position, and existing NPCs. Returns `None` if
+    /// no valid spot exists within the search radius.
+    fn find_growth_spawn(&self, cap_idx: usize) -> Option<(u16, u16)> {
+        let cap = &self.capitals[cap_idx];
+        let cx = cap.x;
+        let cy = cap.y;
+        let w = self.map[0].len() as i16;
+        let h = self.map.len() as i16;
+
+        // Expand outward from the capital's outer ring. Stop once we've scanned
+        // up to the width+height of the map (guaranteed full coverage).
+        for r in 2..=(w.max(h)) {
+            for dy in -r..=r {
+                for dx in -r..=r {
+                    if dx.abs() + dy.abs() != r {
+                        continue; // only scan the current ring, not filled diamond
+                    }
+                    let nx = cx as i16 + dx;
+                    let ny = cy as i16 + dy;
+                    if nx < 0 || nx >= w || ny < 0 || ny >= h {
+                        continue;
+                    }
+                    let (ux, uy) = (nx as u16, ny as u16);
+                    let tile = &self.map[ny as usize][nx as usize];
+                    if tile.terrain != Terrain::Wasteland {
+                        continue;
+                    }
+                    if tile.wall.is_some() {
+                        continue;
+                    }
+                    if self.is_capital_area(ux, uy) {
+                        continue;
+                    }
+                    if self.player.x == ux && self.player.y == uy {
+                        continue;
+                    }
+                    if self.npcs.iter().any(|n| n.x == ux && n.y == uy) {
+                        continue;
+                    }
+                    return Some((ux, uy));
+                }
+            }
+        }
+        None
     }
 
     // ---------- Blocking / movement ----------
