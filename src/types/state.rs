@@ -121,7 +121,9 @@ impl GameState {
                     home_capital_idx: cap_idx,
                     last_move: std::time::Instant::now(),
                     task: NpcTask::Wandering,
-                    carrying: None,
+                    carrying_water: 0,
+                    carrying_fuel: 0,
+                    carrying_scrap: 0,
                 });
             }
         }
@@ -308,22 +310,64 @@ impl GameState {
             let task = self.npcs[i].task;
 
             // Extracting is time-based, not cooldown-based
-            if let NpcTask::Extracting { started, terrain, .. } = task {
+            if let NpcTask::Extracting { tx, ty, started, terrain } = task {
                 if now.duration_since(started).as_millis() >= crate::config::EXTRACT_TIME_MS as u128 {
-                    self.npcs[i].carrying = Some(terrain);
-                    self.npcs[i].task = NpcTask::Returning;
+                    // Add to the appropriate carry slot
+                    match terrain {
+                        Terrain::Water => self.npcs[i].carrying_water += 1,
+                        Terrain::Rocky => self.npcs[i].carrying_fuel += 1,
+                        Terrain::Ruins => self.npcs[i].carrying_scrap += 1,
+                        _ => {}
+                    }
+
+                    // Chain-harvest decision: full -> return, still needed -> keep
+                    // extracting from the same tile, otherwise drop back to Wandering
+                    // so the NPC can re-pick based on current stockpile state.
+                    let total = self.npcs[i].carrying_total();
+                    if total >= crate::config::CARRY_CAP {
+                        self.npcs[i].task = NpcTask::Returning;
+                    } else {
+                        let home_idx = self.npcs[i].home_capital_idx;
+                        let stock_still_needs = if home_idx < self.capitals.len() {
+                            let cap = &self.capitals[home_idx];
+                            let stock = match terrain {
+                                Terrain::Water => cap.water,
+                                Terrain::Rocky => cap.fuel,
+                                Terrain::Ruins => cap.scrap,
+                                _ => u32::MAX,
+                            };
+                            stock < crate::config::MAX_HOARD_BEFORE_USE
+                        } else {
+                            false
+                        };
+                        if stock_still_needs {
+                            // Keep extracting this same tile with a fresh timer
+                            self.npcs[i].task = NpcTask::Extracting {
+                                tx, ty,
+                                started: now,
+                                terrain,
+                            };
+                        } else {
+                            self.npcs[i].task = NpcTask::Wandering;
+                        }
+                    }
                 }
                 continue;
             }
 
-            // All movement/decision tasks are gated by the per-NPC cooldown
+            // All movement/decision tasks are gated by the per-NPC cooldown,
+            // which scales with carry weight and home capital's fuel tier.
+            let weight = self.npcs[i].carrying_total();
             let faction = self.npcs[i].faction;
             let cooldown = self
                 .capitals
                 .iter()
                 .find(|c| c.faction == faction)
-                .map(|c| c.npc_move_cooldown())
-                .unwrap_or(crate::config::NPC_BASE_MOVE_MS);
+                .map(|c| c.npc_move_cooldown(weight))
+                .unwrap_or_else(|| {
+                    let idx = (weight as usize).min(crate::config::NPC_MOVE_COOLDOWN.len() - 1);
+                    crate::config::NPC_MOVE_COOLDOWN[idx]
+                });
             if now.duration_since(self.npcs[i].last_move).as_millis() < cooldown as u128 {
                 continue;
             }
@@ -364,21 +408,18 @@ impl GameState {
                 }
                 NpcTask::Returning => {
                     if self.npc_adjacent_to_home(i) {
-                        // Deposit
-                        if let Some(terrain) = self.npcs[i].carrying {
-                            let home_idx = self.npcs[i].home_capital_idx;
-                            if home_idx < self.capitals.len() {
-                                let cap = &mut self.capitals[home_idx];
-                                let max = crate::config::MAX_STOCKPILE;
-                                match terrain {
-                                    Terrain::Water => cap.water = (cap.water + 1).min(max),
-                                    Terrain::Rocky => cap.fuel = (cap.fuel + 1).min(max),
-                                    Terrain::Ruins => cap.scrap = (cap.scrap + 1).min(max),
-                                    _ => {}
-                                }
-                            }
+                        // Deposit all carried resources
+                        let home_idx = self.npcs[i].home_capital_idx;
+                        if home_idx < self.capitals.len() {
+                            let cap = &mut self.capitals[home_idx];
+                            let max = crate::config::MAX_STOCKPILE;
+                            cap.water = (cap.water + self.npcs[i].carrying_water).min(max);
+                            cap.fuel = (cap.fuel + self.npcs[i].carrying_fuel).min(max);
+                            cap.scrap = (cap.scrap + self.npcs[i].carrying_scrap).min(max);
                         }
-                        self.npcs[i].carrying = None;
+                        self.npcs[i].carrying_water = 0;
+                        self.npcs[i].carrying_fuel = 0;
+                        self.npcs[i].carrying_scrap = 0;
                         self.npcs[i].task = NpcTask::Wandering;
                     } else {
                         let home_idx = self.npcs[i].home_capital_idx;
@@ -396,31 +437,36 @@ impl GameState {
     }
 
     /// Pick the nearest accessible resource tile the NPC's home capital still needs.
-    /// Scores every candidate by (stockpile_amount * SCARCITY_WEIGHT + distance) and
-    /// picks the lowest score — favoring needed resources while avoiding cross-map
-    /// walks when a closer option is almost as needed. Skips anything at
-    /// `MAX_HOARD_BEFORE_USE`.
+    /// Scores every candidate by `(stockpile + already_carrying) * SCARCITY_WEIGHT + distance`
+    /// — "effective amount" accounts for what this NPC will deposit on return so
+    /// they don't over-fetch a single type. Skips resources where the effective
+    /// amount has already reached `MAX_HOARD_BEFORE_USE`. Also skips if the NPC
+    /// is already at their carry cap.
     fn pick_harvest_target(&self, npc_idx: usize) -> Option<(u16, u16, Terrain)> {
-        let home_idx = self.npcs[npc_idx].home_capital_idx;
+        let npc = &self.npcs[npc_idx];
+        if npc.carrying_total() >= crate::config::CARRY_CAP {
+            return None;
+        }
+        let home_idx = npc.home_capital_idx;
         if home_idx >= self.capitals.len() {
             return None;
         }
         let cap = &self.capitals[home_idx];
         let threshold = crate::config::MAX_HOARD_BEFORE_USE;
 
-        let stockpile_for = |t: Terrain| -> Option<u32> {
+        let stockpile_and_carried = |t: Terrain| -> Option<u32> {
             match t {
-                Terrain::Water => Some(cap.water),
-                Terrain::Rocky => Some(cap.fuel),
-                Terrain::Ruins => Some(cap.scrap),
+                Terrain::Water => Some(cap.water + npc.carrying_water),
+                Terrain::Rocky => Some(cap.fuel + npc.carrying_fuel),
+                Terrain::Ruins => Some(cap.scrap + npc.carrying_scrap),
                 _ => None,
             }
         };
 
-        let npc_x = self.npcs[npc_idx].x;
-        let npc_y = self.npcs[npc_idx].y;
+        let npc_x = npc.x;
+        let npc_y = npc.y;
 
-        // Weight: how many distance tiles a unit of stockpile is "worth".
+        // Weight: how many distance tiles a unit of "effective stockpile" is worth.
         // Higher = prefer scarcity over distance. Lower = prefer closer tiles.
         const SCARCITY_WEIGHT: i32 = 3;
 
@@ -428,15 +474,15 @@ impl GameState {
         for (y, row) in self.map.iter().enumerate() {
             for (x, tile) in row.iter().enumerate() {
                 let terrain = tile.terrain;
-                let amount = match stockpile_for(terrain) {
+                let effective = match stockpile_and_carried(terrain) {
                     Some(a) if a < threshold => a,
-                    _ => continue, // not a resource, or already capped
+                    _ => continue, // not a resource, or already enough combined
                 };
                 if !self.resource_accessible(x as u16, y as u16, npc_idx) {
                     continue;
                 }
                 let dist = (x as i32 - npc_x as i32).abs() + (y as i32 - npc_y as i32).abs();
-                let score = dist + (amount as i32) * SCARCITY_WEIGHT;
+                let score = dist + (effective as i32) * SCARCITY_WEIGHT;
                 if best.map_or(true, |(_, _, _, bs)| score < bs) {
                     best = Some((x as u16, y as u16, terrain, score));
                 }

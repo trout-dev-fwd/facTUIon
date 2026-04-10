@@ -30,12 +30,14 @@ Variants:
 - `x, y` — grid position.
 - `faction` — determines color and which capital's cooldown applies.
 - `home_capital_idx` — the capital this NPC is assigned to for population, decay, and the harvest-target source.
-- `last_move` — movement cooldown timestamp (per-NPC, respects fuel tier of home capital).
+- `last_move` — movement cooldown timestamp (per-NPC, scales with carry weight + home capital's fuel tier).
 - `task: NpcTask` — current state.
-- `carrying: Option<Terrain>` — at most one resource type in inventory (`Water`/`Rocky`/`Ruins`). When carrying, the NPC is in `Returning`.
+- `carrying_water`, `carrying_fuel`, `carrying_scrap` — per-resource inventory. Total is capped at `config::CARRY_CAP` (same as the player).
+- `carrying_total()` — helper returning the sum across all three slots. Used for weight-based cooldown and carry-cap checks.
 
 ## Notes
-- **Single resource at a time**: unlike the player's 5-item inventory, NPCs only carry one resource per trip. Simpler logic, and the walking time is the pacing.
+- **Carry cap matches the player**: NPCs can hold up to `CARRY_CAP` (5) items mixed across water/fuel/scrap, and their movement cooldown scales with total weight via `NPC_MOVE_COOLDOWN[weight]`.
+- **Chain extraction**: when an `Extracting` tick completes with room to spare AND the home capital still needs that resource type, the NPC stays in `Extracting` with a fresh timer instead of transitioning out. This avoids 2 wasted cooldown ticks per item when harvesting from a consistent source.
 - **Task is `Copy`**: every field is cheap (u16s, Instant, Terrain). This lets `update_npcs` clone the task out before mutating `self.npcs[i]`.
 - **Adding new tasks**: if you add claiming/wall-building/trading behaviors, extend this enum and add the corresponding match arm in `update_npcs`. The pattern is: decide in Wandering, walk in a Targeting variant, commit in a timed variant, return home if carrying, repeat.
 - **The target picker lives in `state.rs`**, not here. This file only defines the enum and struct.

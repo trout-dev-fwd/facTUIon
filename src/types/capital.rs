@@ -50,9 +50,13 @@ impl Capital {
             .count() as u32
     }
 
-    /// NPC move cooldown in ms, reduced by fuel bonuses.
-    pub fn npc_move_cooldown(&self) -> u64 {
-        let base = crate::config::NPC_BASE_MOVE_MS;
+    /// NPC move cooldown in ms for a given carry weight, reduced by fuel bonuses.
+    /// Uses the per-weight `NPC_MOVE_COOLDOWN` table (heavier NPCs are slower)
+    /// and then applies a percentage reduction for each fuel threshold the
+    /// capital has hit.
+    pub fn npc_move_cooldown(&self, weight: u32) -> u64 {
+        let weight_idx = (weight as usize).min(crate::config::NPC_MOVE_COOLDOWN.len() - 1);
+        let base = crate::config::NPC_MOVE_COOLDOWN[weight_idx];
         let bonus_pct = self.fuel_tiers() * crate::config::FUEL_SPEED_BONUS_PCT;
         let reduction = (base * bonus_pct as u64) / 100;
         base.saturating_sub(reduction)

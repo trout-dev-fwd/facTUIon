@@ -34,7 +34,16 @@ pub struct Npc {
     pub home_capital_idx: usize,
     pub last_move: std::time::Instant,
     pub task: NpcTask,
-    /// The single resource type this NPC is currently carrying (at most 1 item
-    /// at a time for Phase 2 harvesters). `None` means hands are free.
-    pub carrying: Option<Terrain>,
+    /// Per-resource carry inventory — NPCs can hold multiple items of mixed
+    /// types up to `config::CARRY_CAP` total, same as the player.
+    pub carrying_water: u32,
+    pub carrying_fuel: u32,
+    pub carrying_scrap: u32,
+}
+
+impl Npc {
+    /// Total number of items currently carried across all resource types.
+    pub fn carrying_total(&self) -> u32 {
+        self.carrying_water + self.carrying_fuel + self.carrying_scrap
+    }
 }

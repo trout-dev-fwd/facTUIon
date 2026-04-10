@@ -25,11 +25,14 @@ pub const DECAY_FUEL: bool = true;
 pub const DECAY_SCRAP: bool = false; // scrap used for claiming tiles, not decayed
 pub const DEHYDRATION_INTERVAL_MS: u64 = 30_000; // lose NPC every 30s when water is 0
 
-// Fuel speed bonuses: NPC base cooldown reduced by this % at each fuel threshold
+// Fuel speed bonuses: NPC cooldown reduced by this % at each fuel threshold
 // [fuel >= 5, >= 10, >= 15, >= 20] — each tier stacks
 pub const FUEL_THRESHOLDS: [u32; 4] = [5, 10, 15, 20];
 pub const FUEL_SPEED_BONUS_PCT: u32 = 10; // % faster per threshold reached
-pub const NPC_BASE_MOVE_MS: u64 = 400; // NPC base movement cooldown
+// NPC movement cooldown by carry weight (items carried). Indexed like the
+// player's MOVE_COOLDOWN — heavier NPCs move slower. Fuel bonuses reduce
+// whichever entry applies by a percentage.
+pub const NPC_MOVE_COOLDOWN: [u64; 6] = [400, 475, 550, 625, 700, 775];
 
 // NPC behavior
 /// Once a home capital's stockpile of a resource reaches this amount,
