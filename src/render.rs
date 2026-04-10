@@ -162,7 +162,7 @@ pub fn render(f: &mut Frame, state: &GameState) {
         let bar = render_bar(progress, crate::config::EXTRACT_BAR_WIDTH);
         player_spans.push(Span::styled(
             format!("  {} {}", resource_name, bar),
-            Style::default().fg(Color::Green),
+            Style::default().fg(crate::config::TERMINAL_FG),
         ));
     } else if let Some(ref claim) = p.claiming {
         let elapsed = std::time::Instant::now().duration_since(claim.started).as_millis() as f32;
@@ -170,7 +170,7 @@ pub fn render(f: &mut Frame, state: &GameState) {
         let bar = render_bar(progress, crate::config::EXTRACT_BAR_WIDTH);
         player_spans.push(Span::styled(
             format!("  claiming {}", bar),
-            Style::default().fg(Color::Cyan),
+            Style::default().fg(crate::config::TERMINAL_FG),
         ));
     } else if let Some(ref found) = p.founding {
         let elapsed = std::time::Instant::now().duration_since(found.started).as_millis() as f32;
@@ -178,7 +178,7 @@ pub fn render(f: &mut Frame, state: &GameState) {
         let bar = render_bar(progress, crate::config::EXTRACT_BAR_WIDTH);
         player_spans.push(Span::styled(
             format!("  founding city {}", bar),
-            Style::default().fg(Color::Magenta),
+            Style::default().fg(crate::config::TERMINAL_FG),
         ));
     } else if let Some(ref build) = p.building {
         let elapsed = std::time::Instant::now().duration_since(build.started).as_millis() as f32;
@@ -186,7 +186,7 @@ pub fn render(f: &mut Frame, state: &GameState) {
         let bar = render_bar(progress, crate::config::EXTRACT_BAR_WIDTH);
         player_spans.push(Span::styled(
             format!("  building {}", bar),
-            Style::default().fg(Color::Magenta),
+            Style::default().fg(crate::config::TERMINAL_FG),
         ));
     } else if let Some(ref camp) = p.founding_camp {
         let elapsed = std::time::Instant::now().duration_since(camp.started).as_millis() as f32;
@@ -194,7 +194,7 @@ pub fn render(f: &mut Frame, state: &GameState) {
         let bar = render_bar(progress, crate::config::EXTRACT_BAR_WIDTH);
         player_spans.push(Span::styled(
             format!("  founding camp {}", bar),
-            Style::default().fg(Color::Magenta),
+            Style::default().fg(crate::config::TERMINAL_FG),
         ));
     } else if let Some(ref wall) = p.building_wall {
         let elapsed = std::time::Instant::now().duration_since(wall.started).as_millis() as f32;
@@ -202,7 +202,7 @@ pub fn render(f: &mut Frame, state: &GameState) {
         let bar = render_bar(progress, crate::config::EXTRACT_BAR_WIDTH);
         player_spans.push(Span::styled(
             format!("  building wall {}", bar),
-            Style::default().fg(Color::Cyan),
+            Style::default().fg(crate::config::TERMINAL_FG),
         ));
     } else {
         // Show available actions (key letters come from config)

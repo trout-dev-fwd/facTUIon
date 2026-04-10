@@ -73,7 +73,7 @@ pub const WALL_UNCLAIMED_MULTIPLIER: f32 = 3.0;
 pub const BASE_SELL_PRICE: u32 = 5;  // crowns per resource sold to capital
 pub const BASE_BUY_PRICE: u32 = 8;  // crowns per resource bought from capital
 pub const CARRY_CAP: u32 = 5;
-pub const EXTRACT_BAR_WIDTH: usize = 12;
+pub const EXTRACT_BAR_WIDTH: usize = 24;
 
 // Movement speed (ms) by carry weight: index = items carried
 pub const MOVE_COOLDOWN: [u64; 6] = [100, 150, 200, 250, 300, 350];
