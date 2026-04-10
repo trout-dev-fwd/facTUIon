@@ -39,9 +39,9 @@ pub const NPC_MOVE_COOLDOWN: [u64; 6] = [400, 475, 550, 625, 700, 775];
 /// NPCs stop harvesting it (future: start spending it on walls, trade, etc.).
 pub const MAX_HOARD_BEFORE_USE: u32 = 15;
 
-// Population growth
-/// How often each capital checks whether it can spawn a new NPC.
-pub const GROWTH_INTERVAL_MS: u64 = 30_000;
+// Population growth — triggered at the moment water crosses the threshold
+// (not on a timer). Any action that increases a capital's water stockpile
+// will check for growth immediately after the increase.
 /// Water stockpile required to trigger an NPC conversion. Defaults to the
 /// cap (20) so growth only happens when the capital is maxed out on water.
 pub const WATER_GROWTH_THRESHOLD: u32 = MAX_STOCKPILE;

@@ -46,7 +46,6 @@ fn main() -> io::Result<()> {
         state.check_build_wall();
         state.update_decay();
         state.update_dehydration();
-        state.update_growth();
         state.update_npcs();
         terminal.draw(|f| render::render(f, &state))?;
 

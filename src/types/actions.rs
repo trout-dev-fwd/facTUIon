@@ -155,6 +155,11 @@ impl GameState {
         let cap_val = cap_field(cap);
         *cap_val = (*cap_val + 1).min(crate::config::MAX_STOCKPILE);
         self.player.crowns += crate::config::BASE_SELL_PRICE;
+
+        // Selling water can push the capital over the growth threshold.
+        if resource == 1 {
+            self.try_grow_capital(cap_idx);
+        }
     }
 
     /// Buy a resource from the adjacent capital: player gains resource, loses crowns, capital loses resource.

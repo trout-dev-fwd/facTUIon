@@ -35,7 +35,6 @@ pub struct GameState {
     pub last_anim: std::time::Instant,
     pub last_decay: std::time::Instant,
     pub last_dehydration: std::time::Instant,
-    pub last_growth: std::time::Instant,
 }
 
 impl GameState {
@@ -155,7 +154,6 @@ impl GameState {
             last_anim: std::time::Instant::now(),
             last_decay: std::time::Instant::now(),
             last_dehydration: std::time::Instant::now(),
-            last_growth: std::time::Instant::now(),
         }
     }
 
@@ -412,6 +410,7 @@ impl GameState {
                     if self.npc_adjacent_to_home(i) {
                         // Deposit all carried resources
                         let home_idx = self.npcs[i].home_capital_idx;
+                        let deposited_water = self.npcs[i].carrying_water > 0;
                         if home_idx < self.capitals.len() {
                             let cap = &mut self.capitals[home_idx];
                             let max = crate::config::MAX_STOCKPILE;
@@ -423,6 +422,10 @@ impl GameState {
                         self.npcs[i].carrying_fuel = 0;
                         self.npcs[i].carrying_scrap = 0;
                         self.npcs[i].task = NpcTask::Wandering;
+                        // Growth check if water was deposited
+                        if deposited_water {
+                            self.try_grow_capital(home_idx);
+                        }
                     } else {
                         let home_idx = self.npcs[i].home_capital_idx;
                         if home_idx < self.capitals.len() {
@@ -756,52 +759,46 @@ impl GameState {
         }
     }
 
-    /// Population growth: every `GROWTH_INTERVAL_MS`, each capital whose water
-    /// stockpile has reached `WATER_GROWTH_THRESHOLD` spends `WATER_GROWTH_COST`
-    /// water to spawn a new NPC assigned to that capital. Each tick only produces
-    /// at most one NPC per capital to keep the growth rate predictable.
-    pub fn update_growth(&mut self) {
-        let now = std::time::Instant::now();
-        if now.duration_since(self.last_growth).as_millis() < crate::config::GROWTH_INTERVAL_MS as u128 {
+    /// If `capitals[cap_idx].water >= WATER_GROWTH_THRESHOLD`, spend
+    /// `WATER_GROWTH_COST` water and spawn one new NPC assigned to this capital.
+    /// Called immediately after any water increase (NPC deposit, player sale, etc.)
+    /// so growth is instant rather than time-gated.
+    ///
+    /// `pub(super)` so `actions.rs::sell_resource` can trigger it when the player
+    /// sells water to a capital.
+    pub(super) fn try_grow_capital(&mut self, cap_idx: usize) {
+        if cap_idx >= self.capitals.len() {
             return;
         }
-        self.last_growth = now;
+        if self.capitals[cap_idx].water < crate::config::WATER_GROWTH_THRESHOLD {
+            return;
+        }
+        self.capitals[cap_idx].water = self.capitals[cap_idx]
+            .water
+            .saturating_sub(crate::config::WATER_GROWTH_COST);
 
-        // Collect (cap_idx, cx, cy, faction) for capitals that qualify.
-        let eligible: Vec<(usize, u16, u16, FactionId)> = self
-            .capitals
-            .iter()
-            .enumerate()
-            .filter(|(_, c)| c.water >= crate::config::WATER_GROWTH_THRESHOLD)
-            .map(|(i, c)| (i, c.x, c.y, c.faction))
-            .collect();
-
+        let cx = self.capitals[cap_idx].x;
+        let cy = self.capitals[cap_idx].y;
+        let faction = self.capitals[cap_idx].faction;
         let (w, h) = (self.map[0].len() as u16, self.map.len() as u16);
         let player_x = self.player.x;
         let player_y = self.player.y;
 
-        for (cap_idx, cx, cy, faction) in eligible {
-            // Deduct the cost up front
-            self.capitals[cap_idx].water =
-                self.capitals[cap_idx].water.saturating_sub(crate::config::WATER_GROWTH_COST);
+        let (nx, ny) = find_open_adjacent_avoiding(
+            &self.map, &self.capitals, &self.npcs, player_x, player_y, cx, cy, w, h,
+        );
 
-            // Find an empty tile adjacent to the 3×3 capital footprint
-            let (nx, ny) = find_open_adjacent_avoiding(
-                &self.map, &self.capitals, &self.npcs, player_x, player_y, cx, cy, w, h,
-            );
-
-            self.npcs.push(Npc {
-                x: nx,
-                y: ny,
-                faction,
-                home_capital_idx: cap_idx,
-                last_move: now,
-                task: NpcTask::Wandering,
-                carrying_water: 0,
-                carrying_fuel: 0,
-                carrying_scrap: 0,
-            });
-        }
+        self.npcs.push(Npc {
+            x: nx,
+            y: ny,
+            faction,
+            home_capital_idx: cap_idx,
+            last_move: std::time::Instant::now(),
+            task: NpcTask::Wandering,
+            carrying_water: 0,
+            carrying_fuel: 0,
+            carrying_scrap: 0,
+        });
     }
 
     // ---------- Blocking / movement ----------
