@@ -555,19 +555,31 @@ impl GameState {
         });
     }
 
+    /// Effective wall build time for the tile the player is standing on.
+    /// Base time on own territory; `WALL_UNCLAIMED_MULTIPLIER`x on unclaimed or enemy tiles.
+    pub fn build_wall_time_ms(&self) -> u64 {
+        let tile = &self.map[self.player.y as usize][self.player.x as usize];
+        let base = crate::config::BUILD_WALL_TIME_MS;
+        match tile.owner {
+            Some(f) if f == self.player.faction => base,
+            _ => (base as f32 * crate::config::WALL_UNCLAIMED_MULTIPLIER) as u64,
+        }
+    }
+
     pub fn check_build_wall(&mut self) {
         if let Some(ref state) = self.player.building_wall {
             let elapsed = std::time::Instant::now().duration_since(state.started).as_millis();
-            if elapsed >= crate::config::BUILD_WALL_TIME_MS as u128 {
+            let required = self.build_wall_time_ms();
+            if elapsed >= required as u128 {
                 let px = self.player.x;
                 let py = self.player.y;
                 let faction = self.player.faction;
                 self.player.scrap -= crate::config::WALL_SCRAP_COST;
                 self.player.building_wall = None;
 
+                // Walls no longer claim territory — only set the wall flag.
                 let tile = &mut self.map[py as usize][px as usize];
                 tile.wall = Some(faction);
-                tile.owner = Some(faction);
 
                 // Nudge player off the new wall tile
                 let w = self.map[0].len() as i16;

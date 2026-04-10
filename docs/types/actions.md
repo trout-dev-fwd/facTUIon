@@ -41,7 +41,8 @@ Both use function pointers (`fn(&mut Player) -> &mut u32`) to avoid duplicating 
 ### Wall building
 - `can_build_wall()` — 2 scrap, standing on clear wasteland, no capital overlap.
 - `start_build_wall()` — sets `Player.building_wall`.
-- `check_build_wall()` — after `BUILD_WALL_TIME_MS`: sets `tile.wall = Some(faction)` and `tile.owner = Some(faction)`, nudges player off.
+- `build_wall_time_ms()` — effective build time for the current tile: base `BUILD_WALL_TIME_MS` on own territory, `BUILD_WALL_TIME_MS * WALL_UNCLAIMED_MULTIPLIER` on unclaimed or enemy-owned tiles. Used by both the check and the HUD progress bar.
+- `check_build_wall()` — after `build_wall_time_ms()`: sets `tile.wall = Some(faction)` and nudges player off. **Does not claim territory** (`tile.owner` is left alone — walls are impassable strategic pieces, but ownership still has to be earned with `F`).
 
 ## Notes
 - **Visibility trick**: `actions.rs` calls `self.is_blocked_for_npc()` (private in state.rs) via `pub(super)`. Everything else is reachable because both files live in the `types` module and share the same `impl GameState`.

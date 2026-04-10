@@ -14,7 +14,7 @@ Central home for every tunable constant in the game. Changing gameplay values, c
 8. **Player action times and costs** — `EXTRACT_TIME_MS`, `CLAIM_TIME_MS`, `CLAIM_CONTESTED_MULTIPLIER`, `CLAIM_SCRAP_COST`, `PLAYER_STARTING_SCRAP`.
 9. **City founding** — `FOUND_CITY_TIME_MS`, `FOUNDATION_SCRAP_COST` (foundation), `CITY_TOTAL_SCRAP` (completion), `BUILD_SCRAP_TIME_MS` (derived per-scrap build time).
 10. **Camp founding** — `FOUND_CAMP_TIME_MS`, `CAMP_SCRAP_COST`.
-11. **Walls** — `WALL_SCRAP_COST`, `BUILD_WALL_TIME_MS`.
+11. **Walls** — `WALL_SCRAP_COST`, `BUILD_WALL_TIME_MS`, `WALL_UNCLAIMED_MULTIPLIER` (multiplier applied when building on unclaimed tiles or another faction's territory; base time applies on your own territory).
 12. **Trade pricing** — `BASE_SELL_PRICE`, `BASE_BUY_PRICE`, `CARRY_CAP`, `EXTRACT_BAR_WIDTH`.
 13. **Movement speed by weight** — `MOVE_COOLDOWN: [u64; 6]` indexed by items carried (0–5).
 14. **Player controls** — all `KEY_*` char constants. Changing any of these rebinds the action and updates the HUD hint automatically.

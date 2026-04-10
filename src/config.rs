@@ -66,6 +66,8 @@ pub const CAMP_SCRAP_COST: u32 = 5;
 // Free-standing walls
 pub const WALL_SCRAP_COST: u32 = 2;
 pub const BUILD_WALL_TIME_MS: u64 = 2000;
+// Multiplier applied when building on unclaimed tiles or another faction's territory
+pub const WALL_UNCLAIMED_MULTIPLIER: f32 = 3.0;
 
 // Trade pricing
 pub const BASE_SELL_PRICE: u32 = 5;  // crowns per resource sold to capital

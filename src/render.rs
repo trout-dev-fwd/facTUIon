@@ -189,7 +189,7 @@ pub fn render(f: &mut Frame, state: &GameState) {
         ));
     } else if let Some(ref wall) = p.building_wall {
         let elapsed = std::time::Instant::now().duration_since(wall.started).as_millis() as f32;
-        let progress = (elapsed / crate::config::BUILD_WALL_TIME_MS as f32).clamp(0.0, 1.0);
+        let progress = (elapsed / state.build_wall_time_ms() as f32).clamp(0.0, 1.0);
         let bar = render_bar(progress, crate::config::EXTRACT_BAR_WIDTH);
         player_spans.push(Span::styled(
             format!("  building wall {}", bar),
