@@ -292,7 +292,7 @@ impl GameState {
             let task = self.npcs[i].task;
 
             // Extracting is time-based, not cooldown-based
-            if let NpcTask::Extracting { started, terrain } = task {
+            if let NpcTask::Extracting { started, terrain, .. } = task {
                 if now.duration_since(started).as_millis() >= crate::config::EXTRACT_TIME_MS as u128 {
                     self.npcs[i].carrying = Some(terrain);
                     self.npcs[i].task = NpcTask::Returning;
@@ -334,7 +334,7 @@ impl GameState {
                     let dist = (self.npcs[i].x as i16 - tx as i16).abs()
                         + (self.npcs[i].y as i16 - ty as i16).abs();
                     if dist == 1 {
-                        self.npcs[i].task = NpcTask::Extracting { started: now, terrain };
+                        self.npcs[i].task = NpcTask::Extracting { tx, ty, started: now, terrain };
                     } else {
                         // If the target has become inaccessible (e.g. another NPC claimed
                         // it), drop back to Wandering and let the next tick repick.
@@ -430,11 +430,18 @@ impl GameState {
 
     /// Is this resource tile reachable by `self_npc_idx`?
     /// - At least one cardinal neighbor must be walkable wasteland
-    /// - No other NPC can already be Targeting or Extracting this specific tile
+    /// - No **same-faction** NPC can already be Targeting or Extracting this tile
+    ///
+    /// Cross-faction NPCs can intentionally target the same tile — that's how
+    /// rival factions end up contesting the same resource deposit.
     fn resource_accessible(&self, tx: u16, ty: u16, self_npc_idx: usize) -> bool {
+        let self_faction = self.npcs[self_npc_idx].faction;
         for (i, other) in self.npcs.iter().enumerate() {
             if i == self_npc_idx {
                 continue;
+            }
+            if other.faction != self_faction {
+                continue; // rivals from other factions don't block us
             }
             match other.task {
                 NpcTask::TargetingResource { tx: otx, ty: oty, .. } => {
@@ -442,12 +449,8 @@ impl GameState {
                         return false;
                     }
                 }
-                NpcTask::Extracting { .. } => {
-                    // The other NPC is adjacent to their target resource; if that's this
-                    // tile, we're blocked.
-                    let dx = (other.x as i16 - tx as i16).abs();
-                    let dy = (other.y as i16 - ty as i16).abs();
-                    if dx + dy == 1 {
+                NpcTask::Extracting { tx: otx, ty: oty, .. } => {
+                    if otx == tx && oty == ty {
                         return false;
                     }
                 }

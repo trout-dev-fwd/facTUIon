@@ -15,8 +15,11 @@ pub enum NpcTask {
         terrain: Terrain,
     },
     /// Stationary on the tile adjacent to the resource, running the
-    /// extraction timer. `terrain` is the resource type being produced.
+    /// extraction timer. `tx, ty` name the specific resource tile being
+    /// worked so other same-faction NPCs don't claim it simultaneously.
     Extracting {
+        tx: u16,
+        ty: u16,
         started: std::time::Instant,
         terrain: Terrain,
     },

@@ -23,7 +23,7 @@ Wandering
 Variants:
 - `Wandering` — idle; next tick the NPC tries to pick a harvest target via `pick_harvest_target`. If no target is available (all resources capped or unreachable), the NPC takes one random step.
 - `TargetingResource { tx, ty, terrain }` — walking toward a specific resource tile. If the target becomes inaccessible mid-walk (another NPC claimed it), the NPC drops back to `Wandering`.
-- `Extracting { started, terrain }` — stationary on the adjacent tile, running the extraction timer. Uses `EXTRACT_TIME_MS` just like the player.
+- `Extracting { tx, ty, started, terrain }` — stationary on the adjacent tile, running the extraction timer. `tx, ty` name the specific resource tile being worked so the same-faction accessibility check is exact. Uses `EXTRACT_TIME_MS` just like the player.
 - `Returning` — carrying a resource home. Depositing is instant once adjacent to the home capital.
 
 ### `Npc` struct
