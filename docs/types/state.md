@@ -41,6 +41,7 @@ Called from `main.rs` game loop each frame. Internally time-gated.
 - `update_npcs()` — Phase 2 state machine (see `docs/types/npc.md` for the `NpcTask` enum). Each NPC advances its task on a per-weight, per-faction cooldown (`Capital::npc_move_cooldown(weight)`). Idle NPCs pick a harvest target via `pick_harvest_target`, walk toward it via `step_npc_toward`, extract on `EXTRACT_TIME_MS`, then either chain-extract from the same tile (if they still have carry room and the capital still wants more of that resource) or return home to deposit all carried items. NPCs can hold up to `CARRY_CAP` items mixed across types. Random wander is the fallback when no target is available. Deterministic via `sim_rng`.
 - `update_decay()` — every `DECAY_INTERVAL_MS`, each capital loses resources equal to its assigned `population_of`, respecting `DECAY_*` per-resource config toggles.
 - `update_dehydration()` — every `DEHYDRATION_INTERVAL_MS`, each capital with 0 water removes one of its own assigned NPCs.
+- `update_growth()` — every `GROWTH_INTERVAL_MS`, each capital with water at or above `WATER_GROWTH_THRESHOLD` spends `WATER_GROWTH_COST` water to spawn one new NPC assigned to it. Spawn position is chosen via `find_open_adjacent_avoiding`. At most one NPC per capital per tick.
 
 ### Blocking / movement
 - `is_blocked(x, y)` — the canonical "can you walk there?" check. Blocks on: edges, non-wasteland terrain, walls (`tile.wall`), capital footprints, and NPCs. Used for player movement and post-action player nudging.

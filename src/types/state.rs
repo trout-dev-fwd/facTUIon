@@ -35,6 +35,7 @@ pub struct GameState {
     pub last_anim: std::time::Instant,
     pub last_decay: std::time::Instant,
     pub last_dehydration: std::time::Instant,
+    pub last_growth: std::time::Instant,
 }
 
 impl GameState {
@@ -154,6 +155,7 @@ impl GameState {
             last_anim: std::time::Instant::now(),
             last_decay: std::time::Instant::now(),
             last_dehydration: std::time::Instant::now(),
+            last_growth: std::time::Instant::now(),
         }
     }
 
@@ -751,6 +753,54 @@ impl GameState {
             if let Some(idx) = self.npcs.iter().rposition(|n| n.home_capital_idx == cap_idx) {
                 self.npcs.remove(idx);
             }
+        }
+    }
+
+    /// Population growth: every `GROWTH_INTERVAL_MS`, each capital whose water
+    /// stockpile has reached `WATER_GROWTH_THRESHOLD` spends `WATER_GROWTH_COST`
+    /// water to spawn a new NPC assigned to that capital. Each tick only produces
+    /// at most one NPC per capital to keep the growth rate predictable.
+    pub fn update_growth(&mut self) {
+        let now = std::time::Instant::now();
+        if now.duration_since(self.last_growth).as_millis() < crate::config::GROWTH_INTERVAL_MS as u128 {
+            return;
+        }
+        self.last_growth = now;
+
+        // Collect (cap_idx, cx, cy, faction) for capitals that qualify.
+        let eligible: Vec<(usize, u16, u16, FactionId)> = self
+            .capitals
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.water >= crate::config::WATER_GROWTH_THRESHOLD)
+            .map(|(i, c)| (i, c.x, c.y, c.faction))
+            .collect();
+
+        let (w, h) = (self.map[0].len() as u16, self.map.len() as u16);
+        let player_x = self.player.x;
+        let player_y = self.player.y;
+
+        for (cap_idx, cx, cy, faction) in eligible {
+            // Deduct the cost up front
+            self.capitals[cap_idx].water =
+                self.capitals[cap_idx].water.saturating_sub(crate::config::WATER_GROWTH_COST);
+
+            // Find an empty tile adjacent to the 3×3 capital footprint
+            let (nx, ny) = find_open_adjacent_avoiding(
+                &self.map, &self.capitals, &self.npcs, player_x, player_y, cx, cy, w, h,
+            );
+
+            self.npcs.push(Npc {
+                x: nx,
+                y: ny,
+                faction,
+                home_capital_idx: cap_idx,
+                last_move: now,
+                task: NpcTask::Wandering,
+                carrying_water: 0,
+                carrying_fuel: 0,
+                carrying_scrap: 0,
+            });
         }
     }
 
