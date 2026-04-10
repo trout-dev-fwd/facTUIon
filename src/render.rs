@@ -93,16 +93,15 @@ pub fn render(f: &mut Frame, state: &GameState) {
                     format!("{} ", ch),
                     Style::default().fg(crate::config::TERMINAL_BG).bg(cap.faction.color()),
                 ));
-            } else if let Some(wall_faction) = tile.wall {
+            } else if let Some(_wall_faction) = tile.wall {
                 let ch = state.wall_glyph_at(col as u16, row as u16);
-                // Follow the same pattern as player/NPCs: use the tile's owner color
-                // as background if claimed, otherwise no background with the wall's
-                // faction as foreground. Walls don't claim territory, so a wall on
-                // unclaimed wasteland shouldn't look like claimed territory.
+                // Walls don't claim territory. On claimed territory, use the tile's
+                // owner color as bg with a dark glyph. On unclaimed tiles, render the
+                // wall with the default terminal foreground color (no faction tint).
                 let (fg, bg) = if let Some(bg) = tile_bg {
                     (crate::config::TERMINAL_BG, Some(bg))
                 } else {
-                    (wall_faction.color(), None)
+                    (crate::config::TERMINAL_FG, None)
                 };
                 let mut style = Style::default().fg(fg);
                 if let Some(bg) = bg {
