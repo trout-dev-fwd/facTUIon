@@ -379,8 +379,10 @@ impl GameState {
     }
 
     /// Pick the nearest accessible resource tile the NPC's home capital still needs.
-    /// Iterates resource types in order of neediness (lowest stockpile first) and
-    /// skips any resource whose stockpile has reached `MAX_HOARD_BEFORE_USE`.
+    /// Scores every candidate by (stockpile_amount * SCARCITY_WEIGHT + distance) and
+    /// picks the lowest score — favoring needed resources while avoiding cross-map
+    /// walks when a closer option is almost as needed. Skips anything at
+    /// `MAX_HOARD_BEFORE_USE`.
     fn pick_harvest_target(&self, npc_idx: usize) -> Option<(u16, u16, Terrain)> {
         let home_idx = self.npcs[npc_idx].home_capital_idx;
         if home_idx >= self.capitals.len() {
@@ -389,43 +391,41 @@ impl GameState {
         let cap = &self.capitals[home_idx];
         let threshold = crate::config::MAX_HOARD_BEFORE_USE;
 
-        // Build a (terrain, current_amount) list of needs, sorted by lowest amount
-        let mut needs: Vec<(Terrain, u32)> = Vec::new();
-        if cap.water < threshold {
-            needs.push((Terrain::Water, cap.water));
-        }
-        if cap.fuel < threshold {
-            needs.push((Terrain::Rocky, cap.fuel));
-        }
-        if cap.scrap < threshold {
-            needs.push((Terrain::Ruins, cap.scrap));
-        }
-        needs.sort_by_key(|&(_, amt)| amt);
+        let stockpile_for = |t: Terrain| -> Option<u32> {
+            match t {
+                Terrain::Water => Some(cap.water),
+                Terrain::Rocky => Some(cap.fuel),
+                Terrain::Ruins => Some(cap.scrap),
+                _ => None,
+            }
+        };
 
         let npc_x = self.npcs[npc_idx].x;
         let npc_y = self.npcs[npc_idx].y;
 
-        for (terrain, _) in needs {
-            let mut best: Option<(u16, u16, i32)> = None;
-            for (y, row) in self.map.iter().enumerate() {
-                for (x, tile) in row.iter().enumerate() {
-                    if tile.terrain != terrain {
-                        continue;
-                    }
-                    if !self.resource_accessible(x as u16, y as u16, npc_idx) {
-                        continue;
-                    }
-                    let dist = (x as i32 - npc_x as i32).abs() + (y as i32 - npc_y as i32).abs();
-                    if best.map_or(true, |(_, _, bd)| dist < bd) {
-                        best = Some((x as u16, y as u16, dist));
-                    }
+        // Weight: how many distance tiles a unit of stockpile is "worth".
+        // Higher = prefer scarcity over distance. Lower = prefer closer tiles.
+        const SCARCITY_WEIGHT: i32 = 3;
+
+        let mut best: Option<(u16, u16, Terrain, i32)> = None;
+        for (y, row) in self.map.iter().enumerate() {
+            for (x, tile) in row.iter().enumerate() {
+                let terrain = tile.terrain;
+                let amount = match stockpile_for(terrain) {
+                    Some(a) if a < threshold => a,
+                    _ => continue, // not a resource, or already capped
+                };
+                if !self.resource_accessible(x as u16, y as u16, npc_idx) {
+                    continue;
+                }
+                let dist = (x as i32 - npc_x as i32).abs() + (y as i32 - npc_y as i32).abs();
+                let score = dist + (amount as i32) * SCARCITY_WEIGHT;
+                if best.map_or(true, |(_, _, _, bs)| score < bs) {
+                    best = Some((x as u16, y as u16, terrain, score));
                 }
             }
-            if let Some((tx, ty, _)) = best {
-                return Some((tx, ty, terrain));
-            }
         }
-        None
+        best.map(|(tx, ty, terrain, _)| (tx, ty, terrain))
     }
 
     /// Is this resource tile reachable by `self_npc_idx`?
@@ -477,8 +477,11 @@ impl GameState {
     }
 
     /// Greedy single-step movement toward (tx, ty). Prefers the axis with the larger
-    /// remaining distance; falls back to the other axis if the primary step is blocked.
+    /// remaining distance, then the other axis. If both preferred steps are blocked
+    /// (or one is zero because the NPC is already on that axis), falls back to any
+    /// random unblocked cardinal direction to unstick from obstacles.
     fn step_npc_toward(&mut self, i: usize, tx: u16, ty: u16) {
+        use rand::Rng;
         let npc_x = self.npcs[i].x;
         let npc_y = self.npcs[i].y;
         let dx = tx as i16 - npc_x as i16;
@@ -490,6 +493,7 @@ impl GameState {
             ((0i16, dy.signum()), (dx.signum(), 0i16))
         };
 
+        // First: try the two distance-reducing directions
         for (sx, sy) in [primary, secondary] {
             if sx == 0 && sy == 0 {
                 continue;
@@ -502,7 +506,23 @@ impl GameState {
                 return;
             }
         }
-        // Both blocked — stay put this tick
+
+        // Fallback: any random cardinal direction (unsticks NPCs blocked by capitals
+        // or other obstacles that the greedy algorithm can't route around). This may
+        // step away from the target briefly but lets the NPC try again next tick.
+        let dirs: [(i16, i16); 4] = [(0, -1), (1, 0), (0, 1), (-1, 0)];
+        let start = self.sim_rng.gen_range(0..4);
+        for offset in 0..4 {
+            let (sx, sy) = dirs[(start + offset) % 4];
+            let nx = npc_x as i16 + sx;
+            let ny = npc_y as i16 + sy;
+            if !self.is_blocked_for_npc(nx, ny, i) {
+                self.npcs[i].x = nx as u16;
+                self.npcs[i].y = ny as u16;
+                return;
+            }
+        }
+        // Completely boxed in — stay put
     }
 
     /// True if the NPC is cardinally adjacent to any tile of its home capital's footprint.

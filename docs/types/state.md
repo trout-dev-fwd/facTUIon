@@ -48,9 +48,9 @@ Called from `main.rs` game loop each frame. Internally time-gated.
 - `move_player(dx, dy)` — weight-scaled cooldown, then collision check, then updates position. **Also cancels every in-progress `Player.*State` field** — moving aborts any action.
 
 ### NPC harvest helpers (private, used only by `update_npcs`)
-- `pick_harvest_target(npc_idx)` — returns the nearest accessible `(x, y, Terrain)` resource tile the NPC's home capital still needs. Iterates resource types by lowest stockpile first; skips any resource at or above `MAX_HOARD_BEFORE_USE`. Returns `None` if everything is capped or unreachable.
+- `pick_harvest_target(npc_idx)` — returns `(x, y, Terrain)` of the best resource tile. Scores each candidate as `distance + stockpile_amount * SCARCITY_WEIGHT` (currently 3) and returns the lowest score — this blends neediness and proximity so NPCs don't walk cross-map for a slightly scarcer resource when a closer one is almost as needed. Skips anything at or above `MAX_HOARD_BEFORE_USE`.
 - `resource_accessible(tx, ty, self_npc_idx)` — true if (a) at least one cardinal neighbor is walkable wasteland and (b) no other NPC is already Targeting or Extracting this specific resource tile. Used to prevent two NPCs converging on the same tile.
-- `step_npc_toward(i, tx, ty)` — greedy single-step movement toward (tx, ty). Prefers the axis with the larger remaining distance; falls back to the other axis if blocked. No A* — if both are blocked, the NPC stays put for this tick.
+- `step_npc_toward(i, tx, ty)` — greedy single-step movement toward (tx, ty). Tries the primary axis (larger remaining delta) then the other axis. If both are blocked (common when a capital sits between the NPC and its target), falls back to a **random unblocked cardinal direction** via `sim_rng` so the NPC can unstick itself instead of being frozen forever.
 - `npc_adjacent_to_home(i)` — true if the NPC is cardinally adjacent to any footprint tile of its home capital. Gates the deposit transition in `Returning`.
 
 ## Module-level spawn helpers
