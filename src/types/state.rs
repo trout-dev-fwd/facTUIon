@@ -8,6 +8,22 @@ use super::npc::{Npc, NpcTask};
 use super::player::Player;
 use super::terrain::{Terrain, Tile};
 
+/// Goal description for `astar_next_step`. Parameterizes the goal predicate
+/// and the heuristic so the same A* implementation works for both walking to
+/// a resource tile and walking back to a 3×3 capital footprint.
+#[derive(Clone, Copy)]
+enum AstarTarget {
+    /// Reach any tile cardinally adjacent to the single tile (tx, ty).
+    /// Used for resource targets — the tile itself is non-walkable, but its
+    /// 4 cardinal neighbors are walkable wasteland.
+    AdjacentTo(u16, u16),
+    /// Reach any tile cardinally adjacent to the 3×3 capital footprint
+    /// centered at (cx, cy). Used for home returning — the capital's cardinal
+    /// neighbors from the center are all walls, so we need to pathfind to the
+    /// outer ring instead.
+    AdjacentToBox(u16, u16),
+}
+
 pub struct GameState {
     pub map: Vec<Vec<Tile>>,
     pub capitals: Vec<Capital>,
@@ -341,7 +357,7 @@ impl GameState {
                         if !self.resource_accessible(tx, ty, i) {
                             self.npcs[i].task = NpcTask::Wandering;
                         } else {
-                            self.step_npc_toward(i, tx, ty);
+                            self.step_npc_toward(i, AstarTarget::AdjacentTo(tx, ty));
                         }
                     }
                     self.npcs[i].last_move = now;
@@ -368,7 +384,8 @@ impl GameState {
                         let home_idx = self.npcs[i].home_capital_idx;
                         if home_idx < self.capitals.len() {
                             let (cx, cy) = (self.capitals[home_idx].x, self.capitals[home_idx].y);
-                            self.step_npc_toward(i, cx, cy);
+                            // Target the 3×3 footprint, not the unreachable center tile.
+                            self.step_npc_toward(i, AstarTarget::AdjacentToBox(cx, cy));
                         }
                     }
                     self.npcs[i].last_move = now;
@@ -479,18 +496,17 @@ impl GameState {
         false
     }
 
-    /// Single-step movement toward (tx, ty). Uses BFS to find the shortest path
-    /// through any obstacles (walls, capitals, other NPCs) and returns the first
-    /// step. If BFS can't find a path (target unreachable right now), falls back to
-    /// a random cardinal step so the NPC isn't permanently frozen.
-    fn step_npc_toward(&mut self, i: usize, tx: u16, ty: u16) {
+    /// Single-step movement toward a target. Uses A* pathfinding with a goal
+    /// predicate so the same function works whether the NPC is walking toward
+    /// a single resource tile or back to the 3×3 capital footprint. The path
+    /// is planned through static obstacles only; transient NPC collisions are
+    /// resolved at the move-attempt stage with a random-step fallback.
+    fn step_npc_toward(&mut self, i: usize, target: AstarTarget) {
         use rand::Rng;
 
-        if let Some((sx, sy)) = self.bfs_next_step(i, tx, ty) {
+        if let Some((sx, sy)) = self.astar_next_step(i, target) {
             let nx = self.npcs[i].x as i16 + sx;
             let ny = self.npcs[i].y as i16 + sy;
-            // BFS respects is_blocked_for_npc, so this should never be blocked,
-            // but double-check to avoid panics if the simulation state shifted.
             if !self.is_blocked_for_npc(nx, ny, i) {
                 self.npcs[i].x = nx as u16;
                 self.npcs[i].y = ny as u16;
@@ -498,9 +514,9 @@ impl GameState {
             }
         }
 
-        // Fallback: random cardinal step. Used when BFS can't reach the target
-        // (temporary blockage by another NPC, disconnected region, etc.) — the NPC
-        // tries again on the next tick after other things may have moved.
+        // Fallback: random cardinal step. Used when A* can't reach the target
+        // (temporary blockage by another NPC, disconnected region, etc.) — the
+        // NPC tries again on the next tick after other things may have moved.
         let npc_x = self.npcs[i].x;
         let npc_y = self.npcs[i].y;
         let dirs: [(i16, i16); 4] = [(0, -1), (1, 0), (0, 1), (-1, 0)];
@@ -518,69 +534,94 @@ impl GameState {
         // Completely boxed in — stay put
     }
 
-    /// BFS from the NPC's current position, searching for a walkable tile
-    /// cardinally adjacent to (tx, ty). Returns the first step direction
-    /// `(dx, dy)` to take along the shortest path, or `None` if unreachable.
-    /// The target tile itself (often a non-walkable resource or capital) is
-    /// not entered — BFS only needs to *reach* a neighbor of it.
-    fn bfs_next_step(&self, npc_idx: usize, tx: u16, ty: u16) -> Option<(i16, i16)> {
-        use std::collections::VecDeque;
+    /// A* pathfinding from the NPC's position to the first tile satisfying the
+    /// goal predicate (see `AstarTarget`). Plans through static obstacles only
+    /// (`is_static_blocked`) so crowded NPCs don't deadlock each other. Uses
+    /// Manhattan distance to the target anchor as the heuristic.
+    fn astar_next_step(&self, npc_idx: usize, target: AstarTarget) -> Option<(i16, i16)> {
+        use std::cmp::Reverse;
+        use std::collections::BinaryHeap;
 
         let w = self.map[0].len();
         let h = self.map.len();
         let start = (self.npcs[npc_idx].x, self.npcs[npc_idx].y);
 
-        let mut visited = vec![vec![false; w]; h];
-        let mut parent: Vec<Vec<(u16, u16)>> = vec![vec![(u16::MAX, u16::MAX); w]; h];
-        let mut queue: VecDeque<(u16, u16)> = VecDeque::new();
+        // Goal anchor for the heuristic. For AdjacentTo this is the target tile
+        // itself; for AdjacentToBox it's the center of the 3×3.
+        let (anchor_x, anchor_y) = match target {
+            AstarTarget::AdjacentTo(tx, ty) => (tx, ty),
+            AstarTarget::AdjacentToBox(cx, cy) => (cx, cy),
+        };
 
-        visited[start.1 as usize][start.0 as usize] = true;
-        queue.push_back(start);
+        let is_goal = |x: u16, y: u16| -> bool {
+            match target {
+                AstarTarget::AdjacentTo(tx, ty) => {
+                    (x as i16 - tx as i16).abs() + (y as i16 - ty as i16).abs() == 1
+                }
+                AstarTarget::AdjacentToBox(cx, cy) => {
+                    let dx = (x as i16 - cx as i16).abs();
+                    let dy = (y as i16 - cy as i16).abs();
+                    // Cardinally adjacent to the 3×3 = 2 out on one axis, ≤1 on the other
+                    (dx == 2 && dy <= 1) || (dy == 2 && dx <= 1)
+                }
+            }
+        };
+
+        let heuristic = |x: u16, y: u16| -> u32 {
+            let dx = (x as i32 - anchor_x as i32).abs();
+            let dy = (y as i32 - anchor_y as i32).abs();
+            (dx + dy) as u32
+        };
+
+        let mut g_score = vec![vec![u32::MAX; w]; h];
+        let mut parent: Vec<Vec<(u16, u16)>> = vec![vec![(u16::MAX, u16::MAX); w]; h];
+        // Min-heap on f_score = g + h
+        let mut open: BinaryHeap<(Reverse<u32>, u16, u16)> = BinaryHeap::new();
+
+        g_score[start.1 as usize][start.0 as usize] = 0;
+        open.push((Reverse(heuristic(start.0, start.1)), start.0, start.1));
 
         let dirs: [(i16, i16); 4] = [(0, -1), (1, 0), (0, 1), (-1, 0)];
-        let mut goal: Option<(u16, u16)> = None;
+        let mut goal_tile: Option<(u16, u16)> = None;
 
-        'bfs: while let Some((cx, cy)) = queue.pop_front() {
+        while let Some((_, cx, cy)) = open.pop() {
+            if is_goal(cx, cy) {
+                goal_tile = Some((cx, cy));
+                break;
+            }
+
+            let cg = g_score[cy as usize][cx as usize];
             for (dx, dy) in dirs {
                 let nx = cx as i16 + dx;
                 let ny = cy as i16 + dy;
                 if nx < 0 || ny < 0 || nx >= w as i16 || ny >= h as i16 {
                     continue;
                 }
-                let (nux, nuy) = (nx as u16, ny as u16);
-                if visited[nuy as usize][nux as usize] {
-                    continue;
-                }
-                // BFS plans through *static* obstacles only — other NPCs and the
-                // player are handled by the actual move attempt in step_npc_toward.
-                // This prevents deadlocks where crowded NPCs all see each other
-                // as permanent walls.
                 if self.is_static_blocked(nx, ny) {
                     continue;
                 }
-                visited[nuy as usize][nux as usize] = true;
-                parent[nuy as usize][nux as usize] = (cx, cy);
-
-                // Did we reach a tile cardinally adjacent to the target?
-                let adj = (nx - tx as i16).abs() + (ny - ty as i16).abs();
-                if adj == 1 {
-                    goal = Some((nux, nuy));
-                    break 'bfs;
+                let (nux, nuy) = (nx as u16, ny as u16);
+                let tentative_g = cg + 1;
+                if tentative_g < g_score[nuy as usize][nux as usize] {
+                    g_score[nuy as usize][nux as usize] = tentative_g;
+                    parent[nuy as usize][nux as usize] = (cx, cy);
+                    let f = tentative_g + heuristic(nux, nuy);
+                    open.push((Reverse(f), nux, nuy));
                 }
-
-                queue.push_back((nux, nuy));
             }
         }
 
-        let goal = goal?;
+        let goal_tile = goal_tile?;
+        if goal_tile == start {
+            return None; // caller should have transitioned before this point
+        }
 
-        // Walk back via parent pointers until we find the tile whose parent is start.
-        // That tile is the first step of the shortest path.
-        let mut current = goal;
+        // Walk back via parent pointers to the first step after start
+        let mut current = goal_tile;
         loop {
             let p = parent[current.1 as usize][current.0 as usize];
             if p.0 == u16::MAX {
-                return None; // broken chain (shouldn't happen)
+                return None; // broken chain
             }
             if p == start {
                 let dx = current.0 as i16 - start.0 as i16;
