@@ -38,6 +38,16 @@ pub const NPC_MOVE_COOLDOWN: [u64; 6] = [400, 475, 550, 625, 700, 775];
 /// Once a home capital's stockpile of a resource reaches this amount,
 /// NPCs stop harvesting it (future: start spending it on walls, trade, etc.).
 pub const MAX_HOARD_BEFORE_USE: u32 = 15;
+/// Target picker scoring weight for scarcity.
+///
+/// `score = distance + effective_amount * NPC_SCARCITY_WEIGHT`
+///
+/// Higher values make NPCs aggressively chase scarce resources at any cost
+/// (long cross-map trips when stockpiles get moderately full).
+/// Lower values make NPCs prefer nearby resources even when they're almost
+/// capped — crossing the map only happens once the close options genuinely
+/// hit `MAX_HOARD_BEFORE_USE` and are skipped entirely.
+pub const NPC_SCARCITY_WEIGHT: i32 = 2;
 
 // Population growth — triggered at the moment water crosses the threshold
 // (not on a timer). Any action that increases a capital's water stockpile

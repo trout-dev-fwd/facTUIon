@@ -502,10 +502,7 @@ impl GameState {
 
         let npc_x = npc.x;
         let npc_y = npc.y;
-
-        // Weight: how many distance tiles a unit of "effective stockpile" is worth.
-        // Higher = prefer scarcity over distance. Lower = prefer closer tiles.
-        const SCARCITY_WEIGHT: i32 = 3;
+        let scarcity_weight = crate::config::NPC_SCARCITY_WEIGHT;
 
         let mut best: Option<(u16, u16, Terrain, i32)> = None;
         for (y, row) in self.map.iter().enumerate() {
@@ -522,7 +519,7 @@ impl GameState {
                     continue;
                 }
                 let dist = (x as i32 - npc_x as i32).abs() + (y as i32 - npc_y as i32).abs();
-                let score = dist + (effective as i32) * SCARCITY_WEIGHT;
+                let score = dist + (effective as i32) * scarcity_weight;
                 if best.map_or(true, |(_, _, _, bs)| score < bs) {
                     best = Some((x as u16, y as u16, terrain, score));
                 }
