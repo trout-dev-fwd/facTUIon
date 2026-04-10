@@ -39,7 +39,14 @@ Read-only methods the renderer and actions use to understand world state.
 ### Per-frame updates
 Called from `main.rs` game loop each frame. Internally time-gated.
 - `update_anim()` — advances `anim_tick` every `ANIM_TICK_MS`.
-- `update_npcs()` — Phase 2 state machine (see `docs/types/npc.md` for the `NpcTask` enum). Each NPC advances its task on a per-weight, per-faction cooldown (`Capital::npc_move_cooldown(weight)`). Idle NPCs pick a harvest target via `pick_harvest_target`, walk toward it via `step_npc_toward`, extract on `EXTRACT_TIME_MS`, then either chain-extract from the same tile (if they still have carry room and the capital still wants more of that resource) or return home to deposit all carried items. NPCs can hold up to `CARRY_CAP` items mixed across types. Random wander is the fallback when no target is available. Deterministic via `sim_rng`.
+- `update_npcs()` — state machine (see `docs/types/npc.md` for the `NpcTask` enum). Each NPC advances its task on a per-weight, per-faction cooldown (`Capital::npc_move_cooldown(weight)`). Decision priority in the `Wandering` branch is:
+  1. Pick a harvest target (`pick_harvest_target`) — highest priority, covered while any stockpile is below its threshold.
+  2. Pick a claim target (`pick_claim_target`) — expand territory if harvesting is fully saturated (all stockpiles at threshold) and the home capital has ≥ `CLAIM_SCRAP_COST` scrap.
+  3. Random wander — fallback when no useful task is available.
+
+  `Extracting` and `Claiming` are time-based (not cooldown-gated). On claim completion, scrap has already been deducted (at the moment of transition into `Claiming`), so completion just writes `tile.owner = Some(faction)`.
+- `pick_claim_target(npc_idx)` — nearest unclaimed wasteland tile adjacent to the NPC's faction's existing territory, skipping walled tiles, capital footprints, the NPC's blacklist, and tiles another same-faction NPC is already targeting. Returns `None` if the home capital has less than `CLAIM_SCRAP_COST` scrap.
+- `claim_tile_open_for(tx, ty, self_npc_idx)` — returns false if any other same-faction NPC is currently `TargetingClaim` or `Claiming` this exact tile.
 - `update_decay()` — every `DECAY_INTERVAL_MS`, each capital loses resources equal to its assigned `population_of`, respecting `DECAY_*` per-resource config toggles.
 - `update_dehydration()` — every `DEHYDRATION_INTERVAL_MS`, each capital with 0 water removes one of its own assigned NPCs.
 - `try_grow_or_upgrade(cap_idx)` (`pub(super)`) — AI decision called at any site where a capital's stockpile could increase: NPC deposits (`Returning` branch of `update_npcs`) and `actions.rs::sell_resource` for every resource type. The AI picks exactly one action:

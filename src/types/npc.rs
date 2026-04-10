@@ -25,6 +25,17 @@ pub enum NpcTask {
     },
     /// Carrying a resource back to the home capital to deposit.
     Returning,
+    /// Walking toward a specific tile the NPC plans to claim. Unlike
+    /// `TargetingResource`, the NPC walks onto the tile itself (not a
+    /// cardinal neighbor) because claiming happens while standing on it.
+    TargetingClaim { tx: u16, ty: u16 },
+    /// Stationary on the claim target, running the claim timer. Cost has
+    /// already been deducted from the home capital at transition time.
+    Claiming {
+        tx: u16,
+        ty: u16,
+        started: std::time::Instant,
+    },
 }
 
 pub struct Npc {

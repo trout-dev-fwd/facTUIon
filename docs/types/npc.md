@@ -25,6 +25,8 @@ Variants:
 - `TargetingResource { tx, ty, terrain }` — walking toward a specific resource tile. If the target becomes inaccessible mid-walk (another NPC claimed it), the NPC drops back to `Wandering`.
 - `Extracting { tx, ty, started, terrain }` — stationary on the adjacent tile, running the extraction timer. `tx, ty` name the specific resource tile being worked so the same-faction accessibility check is exact. Uses `EXTRACT_TIME_MS` just like the player.
 - `Returning` — carrying a resource home. Depositing is instant once adjacent to the home capital.
+- `TargetingClaim { tx, ty }` — walking *onto* a specific tile to claim it. Unlike `TargetingResource` the NPC stands on the tile itself (not a cardinal neighbor), because the claim timer runs while standing on the target.
+- `Claiming { tx, ty, started }` — stationary on the claim target, running the claim timer. Scrap was deducted from the home capital at the moment of transition into this state, so completion is guaranteed and just sets `tile.owner`.
 
 ### `Npc` struct
 - `x, y` — grid position.

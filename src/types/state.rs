@@ -48,8 +48,8 @@ thread_local! {
 }
 
 /// Goal description for `astar_next_step`. Parameterizes the goal predicate
-/// and the heuristic so the same A* implementation works for both walking to
-/// a resource tile and walking back to a 3×3 capital footprint.
+/// and the heuristic so the same A* implementation works for multiple
+/// movement kinds.
 #[derive(Clone, Copy)]
 enum AstarTarget {
     /// Reach any tile cardinally adjacent to the single tile (tx, ty).
@@ -61,6 +61,10 @@ enum AstarTarget {
     /// neighbors from the center are all walls, so we need to pathfind to the
     /// outer ring instead.
     AdjacentToBox(u16, u16),
+    /// Stand ON the tile (tx, ty). Used for claim targets — unlike
+    /// resources, claim targets are walkable wasteland the NPC needs to
+    /// physically stand on before running the claim timer.
+    At(u16, u16),
 }
 
 pub struct GameState {
@@ -490,6 +494,21 @@ impl GameState {
                 continue;
             }
 
+            // Claiming is time-based like Extracting — no cooldown gate.
+            if let NpcTask::Claiming { tx, ty, started } = task {
+                if now.duration_since(started).as_millis() >= crate::config::CLAIM_TIME_MS as u128 {
+                    // Mark the tile as ours. Scrap was deducted when the
+                    // NPC arrived at the tile (transition to Claiming).
+                    let faction = self.npcs[i].faction;
+                    if (ty as usize) < self.map.len() && (tx as usize) < self.map[0].len() {
+                        self.map[ty as usize][tx as usize].owner = Some(faction);
+                    }
+                    self.npcs[i].task = NpcTask::Wandering;
+                    self.npcs[i].last_failed_target = None;
+                }
+                continue;
+            }
+
             // All movement/decision tasks are gated by the per-NPC cooldown,
             // which scales with carry weight and home capital's fuel tier.
             let weight = self.npcs[i].carrying_total();
@@ -509,11 +528,15 @@ impl GameState {
 
             match task {
                 NpcTask::Wandering => {
-                    // Try to pick a harvest target first
+                    // Pressure-based task selection for Phase 1:
+                    // harvest has highest priority; if nothing needs harvesting
+                    // the NPC tries to expand territory; otherwise it wanders.
                     if let Some((tx, ty, terrain)) = self.pick_harvest_target(i) {
                         self.npcs[i].task = NpcTask::TargetingResource { tx, ty, terrain };
+                    } else if let Some((tx, ty)) = self.pick_claim_target(i) {
+                        self.npcs[i].task = NpcTask::TargetingClaim { tx, ty };
                     } else {
-                        // Nothing to harvest — take a random step
+                        // Nothing to do — take a random step
                         let d = dirs[self.sim_rng.gen_range(0..4)];
                         let nx = self.npcs[i].x as i16 + d.0;
                         let ny = self.npcs[i].y as i16 + d.1;
@@ -578,7 +601,36 @@ impl GameState {
                     }
                     self.npcs[i].last_move = now;
                 }
+                NpcTask::TargetingClaim { tx, ty } => {
+                    // If already standing on the target, try to start claiming
+                    // (deducting scrap from home capital). Otherwise step toward it.
+                    if self.npcs[i].x == tx && self.npcs[i].y == ty {
+                        let home_idx = self.npcs[i].home_capital_idx;
+                        let has_scrap = home_idx < self.capitals.len()
+                            && self.capitals[home_idx].scrap >= crate::config::CLAIM_SCRAP_COST;
+                        if has_scrap {
+                            self.capitals[home_idx].scrap -= crate::config::CLAIM_SCRAP_COST;
+                            self.npcs[i].last_failed_target = None;
+                            self.npcs[i].task =
+                                NpcTask::Claiming { tx, ty, started: now };
+                        } else {
+                            // Out of scrap — abandon
+                            self.npcs[i].task = NpcTask::Wandering;
+                        }
+                    } else {
+                        // If another same-faction NPC grabbed this tile, re-pick.
+                        if !self.claim_tile_open_for(tx, ty, i) {
+                            self.npcs[i].task = NpcTask::Wandering;
+                        } else if !self.step_npc_toward(i, AstarTarget::At(tx, ty)) {
+                            // Pathfinding failed — blacklist and re-pick next tick.
+                            self.npcs[i].last_failed_target = Some((tx, ty));
+                            self.npcs[i].task = NpcTask::Wandering;
+                        }
+                    }
+                    self.npcs[i].last_move = now;
+                }
                 NpcTask::Extracting { .. } => unreachable!("handled above"),
+                NpcTask::Claiming { .. } => unreachable!("handled above"),
             }
         }
     }
@@ -660,6 +712,99 @@ impl GameState {
             }
         }
         best.map(|(tx, ty, terrain, _)| (tx, ty, terrain))
+    }
+
+    /// Pick the nearest unclaimed wasteland tile that the NPC's faction
+    /// could claim — adjacent to at least one tile already owned by this
+    /// faction, not walled, not inside any capital footprint, and not
+    /// already being targeted by another same-faction NPC.
+    ///
+    /// Home capital must have at least `CLAIM_SCRAP_COST` scrap; otherwise
+    /// returns `None` (growth pauses until scrap is available).
+    fn pick_claim_target(&self, npc_idx: usize) -> Option<(u16, u16)> {
+        let faction = self.npcs[npc_idx].faction;
+        let home_idx = self.npcs[npc_idx].home_capital_idx;
+        if home_idx >= self.capitals.len() {
+            return None;
+        }
+        if self.capitals[home_idx].scrap < crate::config::CLAIM_SCRAP_COST {
+            return None;
+        }
+
+        let blacklist = self.npcs[npc_idx].last_failed_target;
+        let npc_x = self.npcs[npc_idx].x;
+        let npc_y = self.npcs[npc_idx].y;
+        let w = self.map[0].len();
+        let h = self.map.len();
+        let dirs: [(i16, i16); 4] = [(0, -1), (1, 0), (0, 1), (-1, 0)];
+
+        let mut best: Option<(u16, u16, i32)> = None;
+        for y in 0..h {
+            for x in 0..w {
+                let tile = &self.map[y][x];
+                if tile.terrain != Terrain::Wasteland {
+                    continue;
+                }
+                if tile.wall.is_some() {
+                    continue;
+                }
+                if tile.owner == Some(faction) {
+                    continue; // already ours
+                }
+                if self.is_capital_area(x as u16, y as u16) {
+                    continue;
+                }
+                if blacklist == Some((x as u16, y as u16)) {
+                    continue;
+                }
+                // Must be cardinally adjacent to a tile already owned by this faction
+                let has_friendly_neighbor = dirs.iter().any(|(dx, dy)| {
+                    let nx = x as i16 + dx;
+                    let ny = y as i16 + dy;
+                    if nx < 0 || ny < 0 || nx >= w as i16 || ny >= h as i16 {
+                        return false;
+                    }
+                    self.map[ny as usize][nx as usize].owner == Some(faction)
+                });
+                if !has_friendly_neighbor {
+                    continue;
+                }
+                // Not already targeted by another same-faction NPC
+                if !self.claim_tile_open_for(x as u16, y as u16, npc_idx) {
+                    continue;
+                }
+                let dist =
+                    (x as i32 - npc_x as i32).abs() + (y as i32 - npc_y as i32).abs();
+                if best.map_or(true, |(_, _, bd)| dist < bd) {
+                    best = Some((x as u16, y as u16, dist));
+                }
+            }
+        }
+        best.map(|(x, y, _)| (x, y))
+    }
+
+    /// Same-faction gate for claim targets: returns false if any other NPC of
+    /// the same faction is already Targeting or Claiming this exact tile.
+    fn claim_tile_open_for(&self, tx: u16, ty: u16, self_npc_idx: usize) -> bool {
+        let self_faction = self.npcs[self_npc_idx].faction;
+        for (i, other) in self.npcs.iter().enumerate() {
+            if i == self_npc_idx {
+                continue;
+            }
+            if other.faction != self_faction {
+                continue;
+            }
+            match other.task {
+                NpcTask::TargetingClaim { tx: otx, ty: oty }
+                | NpcTask::Claiming { tx: otx, ty: oty, .. } => {
+                    if otx == tx && oty == ty {
+                        return false;
+                    }
+                }
+                _ => {}
+            }
+        }
+        true
     }
 
     /// Is this resource tile reachable by `self_npc_idx`?
@@ -792,11 +937,11 @@ impl GameState {
         let size = w * h;
         let start = (self.npcs[npc_idx].x, self.npcs[npc_idx].y);
 
-        // Goal anchor for the heuristic. For AdjacentTo this is the target tile
-        // itself; for AdjacentToBox it's the center of the 3×3.
+        // Goal anchor for the heuristic.
         let (anchor_x, anchor_y) = match target {
             AstarTarget::AdjacentTo(tx, ty) => (tx, ty),
             AstarTarget::AdjacentToBox(cx, cy) => (cx, cy),
+            AstarTarget::At(tx, ty) => (tx, ty),
         };
 
         let is_goal = |x: u16, y: u16| -> bool {
@@ -810,6 +955,7 @@ impl GameState {
                     // Cardinally adjacent to the 3×3 = 2 out on one axis, ≤1 on the other
                     (dx == 2 && dy <= 1) || (dy == 2 && dx <= 1)
                 }
+                AstarTarget::At(tx, ty) => x == tx && y == ty,
             }
         };
 
