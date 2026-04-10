@@ -476,30 +476,18 @@ impl GameState {
         false
     }
 
-    /// Greedy single-step movement toward (tx, ty). Prefers the axis with the larger
-    /// remaining distance, then the other axis. If both preferred steps are blocked
-    /// (or one is zero because the NPC is already on that axis), falls back to any
-    /// random unblocked cardinal direction to unstick from obstacles.
+    /// Single-step movement toward (tx, ty). Uses BFS to find the shortest path
+    /// through any obstacles (walls, capitals, other NPCs) and returns the first
+    /// step. If BFS can't find a path (target unreachable right now), falls back to
+    /// a random cardinal step so the NPC isn't permanently frozen.
     fn step_npc_toward(&mut self, i: usize, tx: u16, ty: u16) {
         use rand::Rng;
-        let npc_x = self.npcs[i].x;
-        let npc_y = self.npcs[i].y;
-        let dx = tx as i16 - npc_x as i16;
-        let dy = ty as i16 - npc_y as i16;
 
-        let (primary, secondary) = if dx.abs() >= dy.abs() {
-            ((dx.signum(), 0i16), (0i16, dy.signum()))
-        } else {
-            ((0i16, dy.signum()), (dx.signum(), 0i16))
-        };
-
-        // First: try the two distance-reducing directions
-        for (sx, sy) in [primary, secondary] {
-            if sx == 0 && sy == 0 {
-                continue;
-            }
-            let nx = npc_x as i16 + sx;
-            let ny = npc_y as i16 + sy;
+        if let Some((sx, sy)) = self.bfs_next_step(i, tx, ty) {
+            let nx = self.npcs[i].x as i16 + sx;
+            let ny = self.npcs[i].y as i16 + sy;
+            // BFS respects is_blocked_for_npc, so this should never be blocked,
+            // but double-check to avoid panics if the simulation state shifted.
             if !self.is_blocked_for_npc(nx, ny, i) {
                 self.npcs[i].x = nx as u16;
                 self.npcs[i].y = ny as u16;
@@ -507,9 +495,11 @@ impl GameState {
             }
         }
 
-        // Fallback: any random cardinal direction (unsticks NPCs blocked by capitals
-        // or other obstacles that the greedy algorithm can't route around). This may
-        // step away from the target briefly but lets the NPC try again next tick.
+        // Fallback: random cardinal step. Used when BFS can't reach the target
+        // (temporary blockage by another NPC, disconnected region, etc.) — the NPC
+        // tries again on the next tick after other things may have moved.
+        let npc_x = self.npcs[i].x;
+        let npc_y = self.npcs[i].y;
         let dirs: [(i16, i16); 4] = [(0, -1), (1, 0), (0, 1), (-1, 0)];
         let start = self.sim_rng.gen_range(0..4);
         for offset in 0..4 {
@@ -523,6 +513,75 @@ impl GameState {
             }
         }
         // Completely boxed in — stay put
+    }
+
+    /// BFS from the NPC's current position, searching for a walkable tile
+    /// cardinally adjacent to (tx, ty). Returns the first step direction
+    /// `(dx, dy)` to take along the shortest path, or `None` if unreachable.
+    /// The target tile itself (often a non-walkable resource or capital) is
+    /// not entered — BFS only needs to *reach* a neighbor of it.
+    fn bfs_next_step(&self, npc_idx: usize, tx: u16, ty: u16) -> Option<(i16, i16)> {
+        use std::collections::VecDeque;
+
+        let w = self.map[0].len();
+        let h = self.map.len();
+        let start = (self.npcs[npc_idx].x, self.npcs[npc_idx].y);
+
+        let mut visited = vec![vec![false; w]; h];
+        let mut parent: Vec<Vec<(u16, u16)>> = vec![vec![(u16::MAX, u16::MAX); w]; h];
+        let mut queue: VecDeque<(u16, u16)> = VecDeque::new();
+
+        visited[start.1 as usize][start.0 as usize] = true;
+        queue.push_back(start);
+
+        let dirs: [(i16, i16); 4] = [(0, -1), (1, 0), (0, 1), (-1, 0)];
+        let mut goal: Option<(u16, u16)> = None;
+
+        'bfs: while let Some((cx, cy)) = queue.pop_front() {
+            for (dx, dy) in dirs {
+                let nx = cx as i16 + dx;
+                let ny = cy as i16 + dy;
+                if nx < 0 || ny < 0 || nx >= w as i16 || ny >= h as i16 {
+                    continue;
+                }
+                let (nux, nuy) = (nx as u16, ny as u16);
+                if visited[nuy as usize][nux as usize] {
+                    continue;
+                }
+                if self.is_blocked_for_npc(nx, ny, npc_idx) {
+                    continue;
+                }
+                visited[nuy as usize][nux as usize] = true;
+                parent[nuy as usize][nux as usize] = (cx, cy);
+
+                // Did we reach a tile cardinally adjacent to the target?
+                let adj = (nx - tx as i16).abs() + (ny - ty as i16).abs();
+                if adj == 1 {
+                    goal = Some((nux, nuy));
+                    break 'bfs;
+                }
+
+                queue.push_back((nux, nuy));
+            }
+        }
+
+        let goal = goal?;
+
+        // Walk back via parent pointers until we find the tile whose parent is start.
+        // That tile is the first step of the shortest path.
+        let mut current = goal;
+        loop {
+            let p = parent[current.1 as usize][current.0 as usize];
+            if p.0 == u16::MAX {
+                return None; // broken chain (shouldn't happen)
+            }
+            if p == start {
+                let dx = current.0 as i16 - start.0 as i16;
+                let dy = current.1 as i16 - start.1 as i16;
+                return Some((dx, dy));
+            }
+            current = p;
+        }
     }
 
     /// True if the NPC is cardinally adjacent to any tile of its home capital's footprint.
